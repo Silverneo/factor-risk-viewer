@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import random
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
@@ -30,6 +31,42 @@ import pyarrow as pa
 from schema import DDL
 
 SEED = 42
+
+
+def gen_irregular_risk_dates(end: str = "2026-04-26") -> list[str]:
+    """Compact irregular date sampling spanning ~12 months (~20 dates):
+    - last 10 business days: every business day
+    - 10-90 days back: bi-weekly Fridays
+    - 90-365 days back: quarterly month-ends
+    """
+    end_d = date.fromisoformat(end)
+    out: set[date] = {end_d}
+    bdays_added = 0
+    i = 1
+    while bdays_added < 10:
+        d = end_d - timedelta(days=i)
+        if d.weekday() < 5:
+            out.add(d)
+            bdays_added += 1
+        i += 1
+
+    # Bi-weekly Fridays back to ~90 days
+    for back in range(21, 91, 14):
+        d = end_d - timedelta(days=back)
+        offset = (d.weekday() - 4) % 7
+        out.add(d - timedelta(days=offset))
+
+    # Quarterly month-ends from 3 to 12 months back (~4 dates)
+    cur = end_d.replace(day=1) - timedelta(days=1)
+    for k in range(12):
+        if k % 3 == 2:  # every 3rd month-end
+            d = cur
+            while d.weekday() >= 5:
+                d -= timedelta(days=1)
+            out.add(d)
+        cur = cur.replace(day=1) - timedelta(days=1)
+
+    return sorted(d.isoformat() for d in out)
 
 # ---------- Portfolio tree ----------------------------------------------------
 
@@ -312,7 +349,11 @@ def _factors_arrow(factors: list[dict]) -> pa.Table:
     })
 
 
-SNAPSHOT_DATES = ["2026-04-25", "2026-03-31", "2025-12-31"]
+RISK_DATES = gen_irregular_risk_dates()
+# Covariance is much heavier per date (~6.5M rows each). For dev we keep it
+# at a single most-recent date — the Covariance tab still renders, just with
+# one date in its selector.
+COVARIANCE_DATES = ["2026-04-26"]
 
 COVARIANCE_LATENT_FACTORS = 30
 
@@ -435,8 +476,9 @@ def write_snapshot(out_path: Path) -> None:
 
         print(f"portfolios:     {len(portfolios):>6}  (leaves: {sum(p['is_leaf'] for p in portfolios)})")
         print(f"factor nodes:   {len(factors):>6}  (leaves: {len(leaf_factors)})")
-        print(f"dates:          {len(SNAPSHOT_DATES):>6}  ({', '.join(SNAPSHOT_DATES)})")
-        print(f"risk_contrib:   {len(portfolios) * len(leaf_factors) * len(SNAPSHOT_DATES):>6} rows total")
+        print(f"risk dates:     {len(RISK_DATES):>6}  ({RISK_DATES[0]} .. {RISK_DATES[-1]})")
+        print(f"cov dates:      {len(COVARIANCE_DATES):>6}  ({', '.join(COVARIANCE_DATES)})")
+        print(f"risk_contrib:   {len(portfolios) * len(leaf_factors) * len(RISK_DATES):>9} rows total")
 
         pn = _portfolios_arrow(portfolios)
         fn = _factors_arrow(factors)
@@ -446,27 +488,30 @@ def write_snapshot(out_path: Path) -> None:
         con.execute("INSERT INTO factor_node SELECT * FROM fn_arrow")
 
         base_risk = gen_risk(portfolios, leaf_factor_ids)
-        for i, date in enumerate(SNAPSHOT_DATES):
+        for i, dt in enumerate(RISK_DATES):
             risk = base_risk if i == 0 else perturb_risk(base_risk, seed=SEED + 1000 * i)
-            pr = _portfolio_risk_arrow(portfolios, risk, date)
-            rc = _risk_contrib_arrow(portfolios, leaf_factor_ids, risk, date)
-            con.register(f"pr_arrow_{i}", pr)
-            con.register(f"rc_arrow_{i}", rc)
-            con.execute(f"INSERT INTO portfolio_risk SELECT CAST(as_of_date AS DATE), portfolio_node_id, total_vol, factor_vol, specific_vol FROM pr_arrow_{i}")
-            con.execute(f"INSERT INTO risk_contribution SELECT CAST(as_of_date AS DATE), portfolio_node_id, factor_node_id, exposure, ctr_vol, ctr_pct, mctr FROM rc_arrow_{i}")
-            print(f"  inserted risk snapshot for {date}")
+            pr = _portfolio_risk_arrow(portfolios, risk, dt)
+            rc = _risk_contrib_arrow(portfolios, leaf_factor_ids, risk, dt)
+            con.register("pr_arrow", pr)
+            con.register("rc_arrow", rc)
+            con.execute("INSERT INTO portfolio_risk SELECT CAST(as_of_date AS DATE), portfolio_node_id, total_vol, factor_vol, specific_vol FROM pr_arrow")
+            con.execute("INSERT INTO risk_contribution SELECT CAST(as_of_date AS DATE), portfolio_node_id, factor_node_id, exposure, ctr_vol, ctr_pct, mctr FROM rc_arrow")
+            con.unregister("pr_arrow"); con.unregister("rc_arrow")
+            del pr, rc, risk
+            if (i + 1) % 5 == 0 or i == len(RISK_DATES) - 1:
+                print(f"  inserted risk snapshots {i + 1}/{len(RISK_DATES)} (latest: {dt})")
 
         n_leaf = len(leaf_factor_ids)
         n_pairs_per_date = n_leaf * (n_leaf + 1) // 2
-        print(f"covariance:     {n_pairs_per_date * len(SNAPSHOT_DATES):>9}  rows total ({n_leaf} leaf factors, upper triangle x {len(SNAPSHOT_DATES)} dates)")
-        for i, date in enumerate(SNAPSHOT_DATES):
+        print(f"covariance:     {n_pairs_per_date * len(COVARIANCE_DATES):>9}  rows total ({n_leaf} leaf factors, upper triangle x {len(COVARIANCE_DATES)} dates)")
+        for i, dt in enumerate(COVARIANCE_DATES):
             cov, corr = gen_dated_covariance(n_leaf, seed=SEED + 100, date_idx=i)
-            cov_arrow = covariance_to_long_arrow(cov, corr, leaf_factor_ids, date)
-            con.register(f"fc_arrow_{i}", cov_arrow)
-            con.execute(f"INSERT INTO factor_covariance SELECT CAST(as_of_date AS DATE), factor_a, factor_b, cov, corr FROM fc_arrow_{i}")
-            con.unregister(f"fc_arrow_{i}")
+            cov_arrow = covariance_to_long_arrow(cov, corr, leaf_factor_ids, dt)
+            con.register("fc_arrow", cov_arrow)
+            con.execute("INSERT INTO factor_covariance SELECT CAST(as_of_date AS DATE), factor_a, factor_b, cov, corr FROM fc_arrow")
+            con.unregister("fc_arrow")
             del cov, corr, cov_arrow
-            print(f"  inserted covariance for {date}")
+            print(f"  inserted covariance for {dt}")
 
         elapsed = time.perf_counter() - t0
         size_mb = out_path.stat().st_size / (1024 * 1024)

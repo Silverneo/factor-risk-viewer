@@ -13,6 +13,11 @@ import {
 } from 'ag-grid-community'
 import { AllEnterpriseModule } from 'ag-grid-enterprise'
 import { Tree, type NodeRendererProps, type MoveHandler, type RenameHandler, type DeleteHandler } from 'react-arborist'
+import { AgCharts } from 'ag-charts-react'
+import { ModuleRegistry as ChartsModuleRegistry, AllCommunityModule as AllChartsModule } from 'ag-charts-community'
+import type { AgChartOptions } from 'ag-charts-community'
+
+ChartsModuleRegistry.registerModules([AllChartsModule])
 
 const OVERRIDE_LS_KEY = 'frv-grouping-override-v1'
 const CUSTOM_GROUPS_LS_KEY = 'frv-custom-groups-v1'
@@ -59,8 +64,9 @@ interface CellEntry { v: number; prev?: number }
 type Metric = 'ctr_pct' | 'ctr_vol' | 'exposure' | 'mctr'
 type Layout = 'pf-rows' | 'fc-rows'
 type ViewMode = 'values' | 'delta' | 'both'
-type AppView = 'risk' | 'covariance'
+type AppView = 'risk' | 'covariance' | 'timeseries'
 type CovType = 'cov' | 'corr'
+type ChartMode = 'area' | 'lines' | 'bar-cat' | 'bar-monthly'
 
 const METRIC_LABEL: Record<Metric, string> = {
   ctr_pct: 'Contribution to Risk (%)',
@@ -824,14 +830,33 @@ interface CovarianceViewProps {
 }
 
 function CovarianceView(props: CovarianceViewProps) {
-  const { effectiveFactors, factorById, factorChildren, availableDates, asOfDate, beginFetch, endFetch } = props
+  const { effectiveFactors, factorById, factorChildren, asOfDate, beginFetch, endFetch } = props
 
   const [focusId, setFocusId] = useState<string>('F_ROOT')
   const [type, setType] = useState<CovType>('corr')
   const [matrix, setMatrix] = useState<Map<string, number>>(new Map())
   const [downloading, setDownloading] = useState(false)
+  const [covDates, setCovDates] = useState<string[]>([])
+  const [covAsOf, setCovAsOf] = useState<string>('')
   const matrixRef = useRef(matrix)
   const gridRef = useRef<AgGridReact>(null)
+
+  // Covariance has its own (smaller) set of dates than the global as-of dropdown.
+  useEffect(() => {
+    fetch(`${API}/api/covariance/dates`)
+      .then(r => r.json() as Promise<string[]>)
+      .then(d => {
+        setCovDates(d)
+        setCovAsOf(prev => prev || d[0] || '')
+      })
+  }, [])
+
+  // If the global as-of changes and that date is one of the cov dates, follow.
+  useEffect(() => {
+    if (asOfDate && covDates.includes(asOfDate)) setCovAsOf(asOfDate)
+  }, [asOfDate, covDates])
+
+  const effectiveAsOfDate = covAsOf
 
   useEffect(() => {
     matrixRef.current = matrix
@@ -858,7 +883,7 @@ function CovarianceView(props: CovarianceViewProps) {
   }, [focusId, factorChildren])
 
   useEffect(() => {
-    if (!asOfDate || queryIds.length === 0) {
+    if (!effectiveAsOfDate || queryIds.length === 0) {
       setMatrix(new Map())
       return
     }
@@ -866,7 +891,7 @@ function CovarianceView(props: CovarianceViewProps) {
     fetch(`${API}/api/covariance/subset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ as_of_date: asOfDate, factor_ids: queryIds, type }),
+      body: JSON.stringify({ as_of_date: effectiveAsOfDate, factor_ids: queryIds, type }),
     })
       .then(r => r.json())
       .then(data => {
@@ -881,7 +906,7 @@ function CovarianceView(props: CovarianceViewProps) {
         setMatrix(m)
       })
       .finally(endFetch)
-  }, [asOfDate, queryIds, type, beginFetch, endFetch])
+  }, [effectiveAsOfDate, queryIds, type, beginFetch, endFetch])
 
   const columnDefs = useMemo<ColDef[]>(() => {
     const factorNameCol: ColDef = {
@@ -954,17 +979,17 @@ function CovarianceView(props: CovarianceViewProps) {
   }, [focusId, factorById])
 
   const downloadParquet = async () => {
-    if (!asOfDate) return
+    if (!effectiveAsOfDate) return
     setDownloading(true)
     beginFetch()
     try {
-      const r = await fetch(`${API}/api/covariance.parquet?as_of_date=${asOfDate}`)
+      const r = await fetch(`${API}/api/covariance.parquet?as_of_date=${effectiveAsOfDate}`)
       if (!r.ok) throw new Error('download failed: ' + r.status)
       const blob = await r.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `factor_covariance_${asOfDate}.parquet`
+      a.download = `factor_covariance_${effectiveAsOfDate}.parquet`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -1001,6 +1026,12 @@ function CovarianceView(props: CovarianceViewProps) {
           })}
         </div>
         <div className="cov-tools-right">
+          <label className="ctl">
+            <span>As of</span>
+            <select value={covAsOf} onChange={(e) => setCovAsOf(e.target.value)} disabled={!covDates.length}>
+              {covDates.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </label>
           <NodeSearch
             nodes={searchNodes}
             rootId="F_ROOT"
@@ -1022,7 +1053,7 @@ function CovarianceView(props: CovarianceViewProps) {
         Showing <b>{queryIds.length}</b> factor leaves under{' '}
         <b>{displayName(factorById.get(focusId))}</b>
         {' '}as a {queryIds.length}×{queryIds.length} {type === 'corr' ? 'correlation' : 'covariance'} matrix
-        {' · as of '}<b>{asOfDate}</b>
+        {' · as of '}<b>{effectiveAsOfDate}</b>
         {queryIds.length === 200 && <span className="cov-warn"> · capped at 200 (drill into a sub-branch for fewer)</span>}
       </div>
 
@@ -1036,6 +1067,228 @@ function CovarianceView(props: CovarianceViewProps) {
           tooltipShowDelay={300}
           animateRows={false}
         />
+      </div>
+    </div>
+  )
+}
+
+interface TimeSeriesData {
+  portfolio_id: string
+  metric: Metric
+  factor_level: number
+  dates: string[]
+  series: { factor_id: string; name: string; values: (number | null)[] }[]
+  totals: (number | null)[]
+}
+
+interface TimeSeriesViewProps {
+  portfolios: PortfolioNode[]
+  beginFetch: () => void
+  endFetch: () => void
+}
+
+const FACTOR_TYPE_COLORS: Record<string, string> = {
+  Country: '#d97706',
+  Industry: '#2563eb',
+  Style: '#7c3aed',
+  Currency: '#059669',
+  Specific: '#dc2626',
+}
+
+function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProps) {
+  const [portfolioId, setPortfolioId] = useState<string>('P_0')
+  const [metric, setMetric] = useState<Metric>('ctr_vol')
+  const [chartMode, setChartMode] = useState<ChartMode>('area')
+  const [data, setData] = useState<TimeSeriesData | null>(null)
+
+  const portfolioName = useMemo(
+    () => portfolios.find(p => p.node_id === portfolioId)?.name ?? portfolioId,
+    [portfolios, portfolioId],
+  )
+
+  useEffect(() => {
+    if (!portfolioId) return
+    beginFetch()
+    fetch(`${API}/api/timeseries?portfolio_id=${portfolioId}&metric=${metric}&factor_level=1`)
+      .then(r => r.json())
+      .then(setData)
+      .finally(endFetch)
+  }, [portfolioId, metric, beginFetch, endFetch])
+
+  const isPct = METRIC_IS_PCT[metric]
+
+  const chartOptions = useMemo<AgChartOptions>(() => {
+    if (!data || !data.dates.length) {
+      return { data: [], series: [], background: { visible: false } }
+    }
+
+    // Optionally resample to month-end before charting.
+    let dates = data.dates
+    let seriesValues = data.series.map(s => s.values)
+    let totals = data.totals
+    if (chartMode === 'bar-monthly') {
+      const buckets = new Map<string, number[]>()
+      // Map each original date to month key 'YYYY-MM'
+      data.dates.forEach((d, idx) => {
+        const key = d.slice(0, 7)
+        const arr = buckets.get(key) ?? []
+        arr.push(idx)
+        buckets.set(key, arr)
+      })
+      const monthKeys = [...buckets.keys()].sort()
+      // For each month, take the LAST observation in that month (typical EOM)
+      const pickIdx = monthKeys.map(k => {
+        const idxs = buckets.get(k)!
+        return idxs[idxs.length - 1]
+      })
+      dates = monthKeys.map(k => k + '-01')
+      seriesValues = data.series.map(s => pickIdx.map(i => s.values[i]))
+      totals = pickIdx.map(i => data.totals[i])
+    }
+
+    // Build chart rows.
+    const rows = dates.map((d, i) => {
+      const row: Record<string, any> = { date: new Date(d) }
+      data.series.forEach((s, sIdx) => {
+        row[s.factor_id] = seriesValues[sIdx][i] ?? 0
+      })
+      row.total = totals[i] ?? null
+      return row
+    })
+
+    const stackType =
+      chartMode === 'area'  ? 'area' :
+      chartMode === 'lines' ? 'line' :
+      'bar'
+    const stacked = chartMode === 'area' || stackType === 'bar'
+    const stackedSeries = data.series.map(s => {
+      const color = FACTOR_TYPE_COLORS[s.name] ?? '#94a3b8'
+      const base: any = {
+        type: stackType,
+        xKey: 'date',
+        yKey: s.factor_id,
+        yName: s.name,
+        fill: color,
+        stroke: color,
+      }
+      if (stacked) base.stacked = true
+      if (stackType === 'area') {
+        return { ...base, fillOpacity: 0.85, strokeWidth: 0, marker: { enabled: true, size: 5, fill: color, stroke: '#ffffff', strokeWidth: 1.5 } }
+      }
+      if (stackType === 'line') {
+        return { ...base, strokeWidth: 2, marker: { enabled: true, size: 4, fill: color, stroke: '#ffffff', strokeWidth: 1 } }
+      }
+      return base
+    })
+    const totalLine = {
+      type: 'line' as const,
+      xKey: 'date',
+      yKey: 'total',
+      yName: 'Total',
+      stroke: '#0f172a',
+      strokeWidth: 2,
+      marker: { enabled: true, size: 6, fill: '#0f172a', stroke: '#ffffff', strokeWidth: 1.5 },
+    }
+
+    const xAxisType = chartMode === 'bar-cat' ? 'category' : 'time'
+    const xLabelFormatter = (params: any) => {
+      const d = params.value
+      if (d instanceof Date) {
+        return d.toLocaleDateString(undefined, { year: '2-digit', month: 'short', day: 'numeric' })
+      }
+      return String(d).slice(0, 10)
+    }
+
+    return {
+      data: rows,
+      series: [...stackedSeries, totalLine],
+      axes: [
+        {
+          type: xAxisType as any,
+          position: 'bottom',
+          label: { formatter: xLabelFormatter, fontSize: 11 },
+          title: { enabled: false },
+        },
+        {
+          type: 'number',
+          position: 'left',
+          label: {
+            fontSize: 11,
+            formatter: (p: any) => isPct ? (p.value * 100).toFixed(1) + '%' : p.value.toFixed(3),
+          },
+          title: { enabled: true, text: METRIC_LABEL[metric], fontSize: 11, color: '#475569' },
+        },
+      ],
+      legend: { position: 'right', item: { marker: { size: 10 }, label: { fontSize: 11 } } },
+      background: { fill: '#ffffff' },
+      padding: { top: 12, right: 16, bottom: 12, left: 12 },
+      animation: { enabled: false },
+      tooltip: { enabled: true },
+    }
+  }, [data, chartMode, isPct, metric])
+
+  const portfolioOptions = useMemo(() =>
+    portfolios.slice().sort((a, b) => a.path.localeCompare(b.path)),
+    [portfolios],
+  )
+
+  return (
+    <div className="ts-view">
+      <div className="ts-toolbar">
+        <div className="ts-tools-left">
+          <label className="ctl">
+            <span>Portfolio</span>
+            <select value={portfolioId} onChange={(e) => setPortfolioId(e.target.value)}>
+              {portfolioOptions.map(p => (
+                <option key={p.node_id} value={p.node_id}>
+                  {'  '.repeat(p.level)}{p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ctl">
+            <span>Metric</span>
+            <select value={metric} onChange={(e) => setMetric(e.target.value as Metric)}>
+              {(Object.keys(METRIC_LABEL) as Metric[]).map(m => (
+                <option key={m} value={m}>{METRIC_LABEL[m]}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="ts-tools-right">
+          <div className="chart-mode-toggle" role="tablist">
+            <button
+              className={chartMode === 'area' ? 'active' : ''}
+              onClick={() => setChartMode('area')}
+              title="Stacked area on a time axis — composition over time, handles irregular dates"
+            >Stacked Area</button>
+            <button
+              className={chartMode === 'lines' ? 'active' : ''}
+              onClick={() => setChartMode('lines')}
+              title="One line per factor — best for comparing factor trajectories"
+            >Lines</button>
+            <button
+              className={chartMode === 'bar-cat' ? 'active' : ''}
+              onClick={() => setChartMode('bar-cat')}
+              title="Categorical x-axis: each date is one column, gaps not preserved"
+            >Bars (categorical)</button>
+            <button
+              className={chartMode === 'bar-monthly' ? 'active' : ''}
+              onClick={() => setChartMode('bar-monthly')}
+              title="Resample to month-end before charting"
+            >Bars (monthly)</button>
+          </div>
+        </div>
+      </div>
+      <div className="ts-info">
+        <b>{portfolioName}</b> · {data?.dates.length ?? 0} observation{(data?.dates.length ?? 0) === 1 ? '' : 's'} · stacked by factor type
+      </div>
+      <div className="ts-chart">
+        {data && data.dates.length > 0 ? (
+          <AgCharts options={chartOptions} />
+        ) : (
+          <div className="ts-empty">No data for this selection.</div>
+        )}
       </div>
     </div>
   )
@@ -1498,8 +1751,14 @@ export default function App() {
               className={appView === 'covariance' ? 'active' : ''}
               onClick={() => setAppView('covariance')}
             >Covariance</button>
+            <button
+              role="tab"
+              aria-selected={appView === 'timeseries'}
+              className={appView === 'timeseries' ? 'active' : ''}
+              onClick={() => setAppView('timeseries')}
+            >Time Series</button>
           </div>
-          <div className="date-picker">
+          {appView !== 'timeseries' && <div className="date-picker">
             <span className="dp-label">AS OF</span>
             <select
               value={asOfDate}
@@ -1521,7 +1780,7 @@ export default function App() {
                 </select>
               </>
             )}
-          </div>
+          </div>}
         </div>
         <div className="topbar-right">
           {appView === 'risk' && (
@@ -1679,6 +1938,13 @@ export default function App() {
           availableDates={availableDates}
           asOfDate={asOfDate}
           setAsOfDate={setAsOfDate}
+          beginFetch={beginFetch}
+          endFetch={endFetch}
+        />
+      )}
+      {appView === 'timeseries' && (
+        <TimeSeriesView
+          portfolios={portfolios}
           beginFetch={beginFetch}
           endFetch={endFetch}
         />

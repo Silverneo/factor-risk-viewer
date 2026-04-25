@@ -114,6 +114,14 @@ def get_dates(cur: duckdb.DuckDBPyConnection = Depends(db_cursor)):
     return [r[0].isoformat() for r in rows]
 
 
+@app.get("/api/covariance/dates")
+def get_covariance_dates(cur: duckdb.DuckDBPyConnection = Depends(db_cursor)):
+    rows = cur.execute(
+        "SELECT DISTINCT as_of_date FROM factor_covariance ORDER BY as_of_date DESC"
+    ).fetchall()
+    return [r[0].isoformat() for r in rows]
+
+
 @app.get("/api/portfolios", response_model=list[PortfolioNode])
 def get_portfolios(
     as_of_date: str | None = None,
@@ -229,6 +237,100 @@ def get_cells(
 def health(cur: duckdb.DuckDBPyConnection = Depends(db_cursor)):
     n = cur.execute("SELECT COUNT(*) FROM risk_contribution").fetchone()[0]
     return {"status": "ok", "risk_contribution_rows": n}
+
+
+# ---------- Time series ------------------------------------------------------
+
+class TimeSeriesPoint(BaseModel):
+    factor_id: str
+    name: str
+    values: list[float | None]
+
+
+class TimeSeriesResponse(BaseModel):
+    portfolio_id: str
+    metric: Metric
+    factor_level: int
+    dates: list[str]
+    series: list[TimeSeriesPoint]
+    totals: list[float | None]
+
+
+@app.get("/api/timeseries", response_model=TimeSeriesResponse)
+def get_timeseries(
+    portfolio_id: str,
+    metric: Metric = "ctr_vol",
+    factor_level: int = 1,
+    cur: duckdb.DuckDBPyConnection = Depends(db_cursor),
+):
+    if metric not in METRIC_COL:
+        raise HTTPException(400, f"unknown metric: {metric}")
+    col = METRIC_COL[metric]
+    rows = cur.execute(
+        f"""
+        WITH groups AS (
+            SELECT node_id, name, path FROM factor_node WHERE level = $lvl
+        ),
+        agg AS (
+            SELECT
+                rc.as_of_date          AS d,
+                g.node_id              AS gid,
+                g.name                 AS gname,
+                SUM({col})             AS v
+            FROM risk_contribution rc
+            JOIN factor_node leaf ON leaf.node_id = rc.factor_node_id AND leaf.is_leaf
+            JOIN groups g
+              ON leaf.path = g.path OR leaf.path LIKE g.path || '/%'
+            WHERE rc.portfolio_node_id = $pid
+            GROUP BY rc.as_of_date, g.node_id, g.name
+        )
+        SELECT d, gid, gname, v FROM agg ORDER BY d, gname
+        """,
+        {"lvl": factor_level, "pid": portfolio_id},
+    ).fetchall()
+
+    if not rows:
+        return TimeSeriesResponse(
+            portfolio_id=portfolio_id, metric=metric, factor_level=factor_level,
+            dates=[], series=[], totals=[],
+        )
+
+    seen: set[str] = set()
+    dates: list[str] = []
+    series_meta: dict[str, dict] = {}
+    for d, gid, gname, _v in rows:
+        ds = d.isoformat()
+        if ds not in seen:
+            seen.add(ds)
+            dates.append(ds)
+        if gid not in series_meta:
+            series_meta[gid] = {"name": gname, "values_by_date": {}}
+    dates.sort()
+
+    for d, gid, _gname, v in rows:
+        series_meta[gid]["values_by_date"][d.isoformat()] = v
+
+    series_out: list[TimeSeriesPoint] = []
+    for gid in sorted(series_meta.keys(), key=lambda k: series_meta[k]["name"]):
+        meta = series_meta[gid]
+        vals = [meta["values_by_date"].get(d) for d in dates]
+        series_out.append(TimeSeriesPoint(factor_id=gid, name=meta["name"], values=vals))
+
+    totals: list[float | None] = []
+    for i in range(len(dates)):
+        s = 0.0
+        any_v = False
+        for sp in series_out:
+            v = sp.values[i]
+            if v is not None:
+                s += v
+                any_v = True
+        totals.append(s if any_v else None)
+
+    return TimeSeriesResponse(
+        portfolio_id=portfolio_id, metric=metric, factor_level=factor_level,
+        dates=dates, series=series_out, totals=totals,
+    )
 
 
 # ---------- Factor covariance ------------------------------------------------

@@ -1096,6 +1096,76 @@ body {
 .cov-warn { color: #b45309; font-weight: 500; }
 
 .cov-row-cell { padding: 0 8px; }
+
+/* ---------- time series view -------------------------------------------- */
+.ts-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #ffffff;
+}
+.ts-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  height: 44px;
+  background: #1e293b;
+  color: #cbd5e1;
+  border-bottom: 1px solid #0f172a;
+  flex-shrink: 0;
+  gap: 12px;
+}
+.ts-tools-left { display: inline-flex; align-items: center; gap: 12px; }
+.ts-tools-right { display: inline-flex; align-items: center; gap: 12px; }
+.ts-info {
+  padding: 6px 16px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 12px;
+  color: #475569;
+  flex-shrink: 0;
+}
+.ts-info b { color: #0f172a; }
+.ts-chart {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+  position: relative;
+}
+.ts-chart > div { width: 100%; height: 100%; }
+.ts-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.chart-mode-toggle {
+  display: inline-flex;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.chart-mode-toggle button {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+}
+.chart-mode-toggle button + button { border-left: 1px solid #334155; }
+.chart-mode-toggle button:hover { color: #e2e8f0; background: #1e293b; }
+.chart-mode-toggle button.active { background: #2563eb; color: #ffffff; }
+
 .cov-row-label {
   display: inline-flex;
   align-items: center;
