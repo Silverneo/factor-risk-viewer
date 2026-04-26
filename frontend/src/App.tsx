@@ -16,6 +16,7 @@ import { Tree, type NodeRendererProps, type MoveHandler, type RenameHandler, typ
 import { AgCharts } from 'ag-charts-react'
 import { ModuleRegistry as ChartsModuleRegistry, AllCommunityModule as AllChartsModule } from 'ag-charts-community'
 import type { AgChartOptions } from 'ag-charts-community'
+import { CovarianceBench } from './bench/CovarianceBench'
 
 ChartsModuleRegistry.registerModules([AllChartsModule])
 
@@ -64,7 +65,7 @@ interface CellEntry { v: number; prev?: number }
 type Metric = 'ctr_pct' | 'ctr_vol' | 'exposure' | 'mctr'
 type Layout = 'pf-rows' | 'fc-rows'
 type ViewMode = 'values' | 'delta' | 'both'
-type AppView = 'risk' | 'covariance' | 'timeseries'
+type AppView = 'risk' | 'covariance' | 'timeseries' | 'bench'
 type CovType = 'cov' | 'corr'
 type ChartMode = 'area' | 'lines' | 'bar-cat' | 'bar-monthly'
 
@@ -1087,12 +1088,13 @@ interface TimeSeriesViewProps {
   endFetch: () => void
 }
 
+// Print-financial editorial palette — terra, navy, ochre, forest, oxblood.
 const FACTOR_TYPE_COLORS: Record<string, string> = {
-  Country: '#d97706',
-  Industry: '#2563eb',
-  Style: '#7c3aed',
-  Currency: '#059669',
-  Specific: '#dc2626',
+  Country:  '#B7472A',
+  Industry: '#1B3A57',
+  Style:    '#9B6E2C',
+  Currency: '#2E5340',
+  Specific: '#5A1F2E',
 }
 
 function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProps) {
@@ -1161,6 +1163,13 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
       chartMode === 'lines' ? 'line' :
       'bar'
     const stacked = chartMode === 'area' || stackType === 'bar'
+    const fontFamily = '"JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace'
+    const uiFontFamily = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
+    const labelColor = '#5C5147'
+    const titleColor = '#1B1813'
+    const axisLineColor = '#C9BFA8'
+    const gridColor = '#EAE2CD'
+
     const stackedSeries = data.series.map(s => {
       const color = FACTOR_TYPE_COLORS[s.name] ?? '#94a3b8'
       const base: any = {
@@ -1173,10 +1182,19 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
       }
       if (stacked) base.stacked = true
       if (stackType === 'area') {
-        return { ...base, fillOpacity: 0.85, strokeWidth: 0, marker: { enabled: true, size: 5, fill: color, stroke: '#ffffff', strokeWidth: 1.5 } }
+        return {
+          ...base,
+          fillOpacity: 0.78,
+          strokeWidth: 0,
+          marker: { enabled: false },
+        }
       }
       if (stackType === 'line') {
-        return { ...base, strokeWidth: 2, marker: { enabled: true, size: 4, fill: color, stroke: '#ffffff', strokeWidth: 1 } }
+        return {
+          ...base,
+          strokeWidth: 1.6,
+          marker: { enabled: true, size: 3, shape: 'circle', fill: color, strokeWidth: 0 },
+        }
       }
       return base
     })
@@ -1186,8 +1204,8 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
       yKey: 'total',
       yName: 'Total',
       stroke: '#0f172a',
-      strokeWidth: 2,
-      marker: { enabled: true, size: 6, fill: '#0f172a', stroke: '#ffffff', strokeWidth: 1.5 },
+      strokeWidth: 1.8,
+      marker: { enabled: true, size: 4, shape: 'circle', fill: '#0f172a', strokeWidth: 0 },
     }
 
     const xAxisType = chartMode === 'bar-cat' ? 'category' : 'time'
@@ -1198,32 +1216,78 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
       }
       return String(d).slice(0, 10)
     }
+    const yLabelFormatter = (p: any) =>
+      isPct ? (p.value * 100).toFixed(1) + '%' : p.value.toFixed(3)
 
     return {
+      theme: 'ag-financial',
       data: rows,
       series: [...stackedSeries, totalLine],
       axes: [
         {
           type: xAxisType as any,
           position: 'bottom',
-          label: { formatter: xLabelFormatter, fontSize: 11 },
+          label: {
+            formatter: xLabelFormatter,
+            fontSize: 10,
+            fontFamily,
+            color: labelColor,
+          },
+          line: { stroke: axisLineColor, width: 1 },
+          tick: { stroke: axisLineColor, width: 1, size: 4 },
+          gridLine: { enabled: false },
+          crosshair: { enabled: true, snap: true, stroke: '#94a3b8', strokeWidth: 1, lineDash: [3, 3] },
           title: { enabled: false },
         },
         {
           type: 'number',
           position: 'left',
           label: {
-            fontSize: 11,
-            formatter: (p: any) => isPct ? (p.value * 100).toFixed(1) + '%' : p.value.toFixed(3),
+            fontSize: 10,
+            fontFamily,
+            color: labelColor,
+            formatter: yLabelFormatter,
           },
-          title: { enabled: true, text: METRIC_LABEL[metric], fontSize: 11, color: '#475569' },
+          line: { width: 0 },
+          tick: { size: 0 },
+          gridLine: { enabled: true, style: [{ stroke: gridColor, lineDash: [] }] },
+          crosshair: { enabled: false },
+          title: { enabled: true, text: METRIC_LABEL[metric], fontSize: 10, fontFamily, color: titleColor, fontWeight: 'normal' as any },
         },
       ],
-      legend: { position: 'right', item: { marker: { size: 10 }, label: { fontSize: 11 } } },
-      background: { fill: '#ffffff' },
-      padding: { top: 12, right: 16, bottom: 12, left: 12 },
+      legend: {
+        position: 'top',
+        spacing: 12,
+        item: {
+          marker: { size: 9, shape: 'square' as any },
+          label: { fontSize: 11, fontFamily: uiFontFamily, color: titleColor },
+          paddingX: 14,
+          paddingY: 4,
+        },
+      },
+      background: { fill: '#FAF7EE' },
+      padding: { top: 8, right: 18, bottom: 8, left: 8 },
       animation: { enabled: false },
-      tooltip: { enabled: true },
+      tooltip: {
+        enabled: true,
+        delay: 0,
+        renderer: (params: any) => {
+          const d = params.datum?.[params.xKey]
+          const dateLabel = d instanceof Date
+            ? d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+            : String(d)
+          const v = params.datum?.[params.yKey]
+          const valStr = typeof v === 'number'
+            ? (isPct ? (v * 100).toFixed(2) + '%' : v.toFixed(4))
+            : '—'
+          const swatch = `<span style="display:inline-block;width:9px;height:9px;background:${params.color};margin-right:6px;vertical-align:1px"></span>`
+          return {
+            title: `<span style="font-family:${uiFontFamily};font-size:9px;color:#85725A;text-transform:uppercase;letter-spacing:0.14em">${dateLabel}</span>`,
+            content: `<div style="font-family:${uiFontFamily};font-size:12px;color:#1B1813;padding:2px 0">${swatch}<b style="font-weight:500">${params.yName}</b><span style="font-family:${fontFamily};font-weight:600;margin-left:8px">${valStr}</span></div>`,
+          }
+        },
+      },
+      navigator: { enabled: false },
     }
   }, [data, chartMode, isPct, metric])
 
@@ -1231,6 +1295,41 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
     portfolios.slice().sort((a, b) => a.path.localeCompare(b.path)),
     [portfolios],
   )
+
+  const stats = useMemo(() => {
+    if (!data || data.totals.length === 0) return null
+    const finite = data.totals.filter((v): v is number => typeof v === 'number' && isFinite(v))
+    if (!finite.length) return null
+    const latest = finite[finite.length - 1]
+    const earliest = finite[0]
+    const hi = Math.max(...finite)
+    const lo = Math.min(...finite)
+    const delta = latest - earliest
+    return {
+      latest,
+      delta,
+      hi,
+      lo,
+      firstDate: data.dates[0],
+      lastDate: data.dates[data.dates.length - 1],
+    }
+  }, [data])
+
+  const fmtVal = (v: number | null | undefined) => {
+    if (typeof v !== 'number' || !isFinite(v)) return '—'
+    return isPct ? (v * 100).toFixed(2) + '%' : v.toFixed(3)
+  }
+  const fmtDelta = (v: number | null | undefined) => {
+    if (typeof v !== 'number' || !isFinite(v)) return '—'
+    if (isPct) {
+      const bps = v * 10000
+      const rounded = Math.round(bps)
+      const sign = rounded > 0 ? '+' : rounded < 0 ? '' : ''
+      return sign + rounded + ' bps'
+    }
+    const sign = v > 0 ? '+' : ''
+    return sign + v.toFixed(3)
+  }
 
   return (
     <div className="ts-view">
@@ -1280,15 +1379,55 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
           </div>
         </div>
       </div>
-      <div className="ts-info">
-        <b>{portfolioName}</b> · {data?.dates.length ?? 0} observation{(data?.dates.length ?? 0) === 1 ? '' : 's'} · stacked by factor type
-      </div>
-      <div className="ts-chart">
-        {data && data.dates.length > 0 ? (
-          <AgCharts options={chartOptions} />
-        ) : (
-          <div className="ts-empty">No data for this selection.</div>
-        )}
+      <div className="ts-paper">
+        <header className="ts-edhdr">
+          <div className="ts-edhdr-left">
+            <span className="ts-eyebrow">Risk Decomposition</span>
+            <h2 className="ts-edhdr-title">{portfolioName}</h2>
+            <p className="ts-edhdr-sub"><i>{METRIC_LABEL[metric]}</i></p>
+          </div>
+          {stats && (
+            <dl className="ts-stats">
+              <div className="ts-stat">
+                <dt>Latest</dt>
+                <dd className="ts-stat-val">{fmtVal(stats.latest)}</dd>
+                <dd className="ts-stat-meta">{stats.lastDate}</dd>
+              </div>
+              <div className="ts-stat">
+                <dt>{data?.dates.length ?? 0}-pt change</dt>
+                <dd className={`ts-stat-val ${stats.delta > 0 ? 'is-up' : stats.delta < 0 ? 'is-dn' : ''}`}>
+                  {fmtDelta(stats.delta)}
+                </dd>
+                <dd className="ts-stat-meta">vs {stats.firstDate}</dd>
+              </div>
+              <div className="ts-stat">
+                <dt>Period high</dt>
+                <dd className="ts-stat-val">{fmtVal(stats.hi)}</dd>
+                <dd className="ts-stat-meta">over {data?.dates.length ?? 0} obs</dd>
+              </div>
+              <div className="ts-stat">
+                <dt>Period low</dt>
+                <dd className="ts-stat-val">{fmtVal(stats.lo)}</dd>
+                <dd className="ts-stat-meta">over {data?.dates.length ?? 0} obs</dd>
+              </div>
+            </dl>
+          )}
+        </header>
+        <div className="ts-rule" aria-hidden="true" />
+        <div className="ts-chart">
+          {data && data.dates.length > 0 ? (
+            <AgCharts options={chartOptions} />
+          ) : (
+            <div className="ts-empty">No data for this selection.</div>
+          )}
+        </div>
+        <footer className="ts-edftr">
+          <span>Source · Factor Risk Viewer</span>
+          <span className="ts-edftr-sep">·</span>
+          <span>Snapshot stack of {data?.dates.length ?? 0} observations</span>
+          <span className="ts-edftr-sep">·</span>
+          <span>{stats ? `${stats.firstDate} — ${stats.lastDate}` : '—'}</span>
+        </footer>
       </div>
     </div>
   )
@@ -1757,8 +1896,14 @@ export default function App() {
               className={appView === 'timeseries' ? 'active' : ''}
               onClick={() => setAppView('timeseries')}
             >Time Series</button>
+            <button
+              role="tab"
+              aria-selected={appView === 'bench'}
+              className={appView === 'bench' ? 'active' : ''}
+              onClick={() => setAppView('bench')}
+            >Bench</button>
           </div>
-          {appView !== 'timeseries' && <div className="date-picker">
+          {appView !== 'timeseries' && appView !== 'bench' && <div className="date-picker">
             <span className="dp-label">AS OF</span>
             <select
               value={asOfDate}
@@ -1949,6 +2094,7 @@ export default function App() {
           endFetch={endFetch}
         />
       )}
+      {appView === 'bench' && <CovarianceBench />}
       <footer className="statusbar">
         {pendingFetches > 0 && (
           <span className="status-loading">
