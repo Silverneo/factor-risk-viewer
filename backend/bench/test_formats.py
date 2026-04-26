@@ -13,7 +13,7 @@ def make_input(n: int) -> tuple[list[str], np.ndarray]:
     return ids, sym
 
 
-@pytest.mark.parametrize("fmt", ["A", "B"])
+@pytest.mark.parametrize("fmt", ["A", "B", "D"])
 def test_roundtrip(fmt: str):
     ids, matrix = make_input(20)
     payload, content_type = formats.REGISTRY[fmt].encode(ids, matrix)
