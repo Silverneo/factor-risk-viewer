@@ -64,6 +64,7 @@ def time_encode(fn, ids, matrix):
 
 
 def main():
+    RESULTS_DIR.mkdir(exist_ok=True)
     rows = []
     for n in SIZES:
         print(f"\nsize n={n} ({n*n:,} cells)")

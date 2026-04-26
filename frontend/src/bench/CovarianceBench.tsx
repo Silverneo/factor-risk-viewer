@@ -1,17 +1,24 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { tableFromIPC } from 'apache-arrow'
 import { AgGridReact } from 'ag-grid-react'
-import { ModuleRegistry, AllCommunityModule, themeBalham } from 'ag-grid-community'
-
-ModuleRegistry.registerModules([AllCommunityModule])
+import { themeBalham } from 'ag-grid-community'
 
 const API = import.meta.env.VITE_API ?? 'http://localhost:8000'
 const FORMATS = ['A', 'B', 'D', 'E'] as const
 const SIZES = [200, 1000, 3600] as const
+const TRIALS = 3
+const FPS_TEST_DURATION_MS = 4000
+const FPS_FORMATS = ['B', 'D'] as const
+
+type FormatCode = typeof FORMATS[number]
+
+interface PerformanceWithMemory extends Performance {
+  memory?: { usedJSHeapSize: number }
+}
 
 type Row = {
   n: number
-  format: string
+  format: FormatCode
   decodeMs: number | null
   heapDeltaMb: number | null
   payloadBytes: number
@@ -67,8 +74,12 @@ function decodeE(buf: ArrayBuffer): Decoded {
   return { ids, matrix: new Float32Array(buf.slice(bodyOffset, bodyOffset + bytes)), n }
 }
 
-const DECODERS: Record<string, (buf: ArrayBuffer) => Decoded> = {
+const DECODERS: Record<FormatCode, (buf: ArrayBuffer) => Decoded> = {
   A: decodeA, B: decodeB, D: decodeD, E: decodeE,
+}
+
+function readHeap(): number | null {
+  return (performance as PerformanceWithMemory).memory?.usedJSHeapSize ?? null
 }
 
 async function measureScrollFps(api: NonNullable<AgGridReact['api']>, n: number): Promise<number> {
@@ -84,7 +95,7 @@ async function measureScrollFps(api: NonNullable<AgGridReact['api']>, n: number)
   for (let c = 0; c < n; c += 10) {
     api.ensureColumnVisible(`c${c}`)
     await new Promise(r => setTimeout(r, 16))
-    if (performance.now() - start > 4000) break
+    if (performance.now() - start > FPS_TEST_DURATION_MS) break
   }
   stop = true
   const elapsedSec = (performance.now() - start) / 1000
@@ -98,14 +109,29 @@ export function CovarianceBench() {
   const [activeMatrix, setActiveMatrix] = useState<Decoded | null>(null)
   const gridRef = useRef<AgGridReact>(null)
 
+  const gridRowData = useMemo(
+    () => activeMatrix ? Array.from({ length: activeMatrix.n }, (_, i) => ({ __row: i })) : [],
+    [activeMatrix],
+  )
+  const gridColumnDefs = useMemo(() => {
+    if (!activeMatrix) return []
+    const m = activeMatrix
+    return Array.from({ length: m.n }, (_, j) => ({
+      colId: `c${j}`,
+      headerName: String(j),
+      width: 64,
+      valueGetter: (p: { data: { __row: number } }) => m.matrix[p.data.__row * m.n + j],
+    }))
+  }, [activeMatrix])
+
   async function runFpsTest() {
     setFpsResults([])
     const out: { format: string; fps: number }[] = []
-    for (const fmt of ['B', 'D'] as const) {
+    for (const fmt of FPS_FORMATS) {
       const buf = await fetch(`${API}/api/_bench/covariance?format=${fmt}&n=3600`).then(r => r.arrayBuffer())
       const decoded = DECODERS[fmt](buf)
       setActiveMatrix(decoded)
-      // wait for AG Grid to mount + settle
+      // Wait for AG Grid to mount + settle before timing.
       await new Promise(r => requestAnimationFrame(r))
       await new Promise(r => setTimeout(r, 300))
       const api = gridRef.current?.api
@@ -127,21 +153,16 @@ export function CovarianceBench() {
         try {
           const buf = await fetch(url).then(r => r.arrayBuffer())
           payloadBytes = buf.byteLength
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const heapBefore = (performance as any).memory?.usedJSHeapSize ?? null
+          const heapBefore = readHeap()
           const samples: number[] = []
-          let decoded: Decoded | null = null
-          for (let trial = 0; trial < 3; trial++) {
+          for (let trial = 0; trial < TRIALS; trial++) {
             const t0 = performance.now()
-            decoded = DECODERS[fmt](buf)
+            DECODERS[fmt](buf)
             samples.push(performance.now() - t0)
           }
           samples.sort((a, b) => a - b)
-          const decodeMs = samples[1]
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ;(window as any).__lastDecoded = decoded
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const heapAfter = (performance as any).memory?.usedJSHeapSize ?? null
+          const decodeMs = samples[Math.floor(TRIALS / 2)]
+          const heapAfter = readHeap()
           const heapDeltaMb =
             heapBefore != null && heapAfter != null
               ? (heapAfter - heapBefore) / 1e6
@@ -183,7 +204,7 @@ export function CovarianceBench() {
       <table style={{ marginTop: 12, borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            {['n', 'format', 'decode ms (median 3)', 'heap Δ MB', 'payload bytes'].map(h => (
+            {['n', 'format', `decode ms (median ${TRIALS})`, 'heap Δ MB', 'payload bytes'].map(h => (
               <th key={h} style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #ccc' }}>{h}</th>
             ))}
           </tr>
@@ -226,17 +247,8 @@ export function CovarianceBench() {
           <AgGridReact
             ref={gridRef}
             theme={themeBalham}
-            rowData={Array.from({ length: activeMatrix.n }, (_, i) => ({ __row: i }))}
-            columnDefs={Array.from({ length: activeMatrix.n }, (_, j) => ({
-              colId: `c${j}`,
-              headerName: String(j),
-              width: 64,
-              valueGetter: (p: { data: { __row: number } }) => {
-                const m = activeMatrix
-                const i = p.data.__row
-                return m.matrix[i * m.n + j]
-              },
-            }))}
+            rowData={gridRowData}
+            columnDefs={gridColumnDefs}
           />
         </div>
       )}

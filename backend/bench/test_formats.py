@@ -2,20 +2,12 @@ import numpy as np
 import pytest
 
 from bench import formats
+from bench.server_bench import synth
 
 
-def make_input(n: int) -> tuple[list[str], np.ndarray]:
-    rng = np.random.default_rng(42)
-    ids = [f"F_{i}" for i in range(n)]
-    raw = rng.standard_normal((n, n)).astype(np.float32)
-    sym = (raw + raw.T) / 2.0  # symmetric, like a real cov matrix
-    np.fill_diagonal(sym, 1.0)
-    return ids, sym
-
-
-@pytest.mark.parametrize("fmt", ["A", "B", "D", "E"])
+@pytest.mark.parametrize("fmt", list(formats.REGISTRY.keys()))
 def test_roundtrip(fmt: str):
-    ids, matrix = make_input(20)
+    ids, matrix = synth(20)
     payload, content_type = formats.REGISTRY[fmt].encode(ids, matrix)
     assert isinstance(payload, (bytes, bytearray))
     assert isinstance(content_type, str) and content_type

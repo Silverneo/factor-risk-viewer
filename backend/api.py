@@ -6,8 +6,10 @@ Run: uv run uvicorn api:app --reload --port 8000
 from __future__ import annotations
 
 import io
+import os
 import re
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -469,21 +471,25 @@ def get_covariance_subset(
 # Serves synthetic covariance payloads in 4 formats for the frontend bench
 # harness. Gated by env var FACTOR_RISK_BENCH=1 because the app has no auth.
 
-import os as _os
+if os.environ.get("FACTOR_RISK_BENCH") == "1":
+    from bench import formats as _bench_formats
+    from bench.server_bench import SIZES as _BENCH_SIZES, synth as _bench_synth
 
-if _os.environ.get("FACTOR_RISK_BENCH") == "1":
-    from bench import formats as _bench_formats  # type: ignore
-    from bench.server_bench import synth as _bench_synth  # type: ignore
+    # Cache encoded payloads by (format, n). Without this every request
+    # re-allocates and re-encodes — at n=3600 format A that is ~3 GB of
+    # transient Python heap, so concurrent hits would OOM the worker.
+    @lru_cache(maxsize=len(_bench_formats.REGISTRY) * len(_BENCH_SIZES))
+    def _cached_bench_payload(fmt: str, n: int) -> tuple[bytes, str]:
+        ids, matrix = _bench_synth(n)
+        return _bench_formats.REGISTRY[fmt].encode(ids, matrix)
 
     @app.get("/api/_bench/covariance")
     def _bench_covariance(format: str, n: int) -> Response:
         if format not in _bench_formats.REGISTRY:
             raise HTTPException(400, f"unknown format {format!r}")
-        if n not in (200, 1000, 3600):
-            raise HTTPException(400, f"n must be one of 200/1000/3600, got {n}")
-        ids, matrix = _bench_synth(n)
-        spec = _bench_formats.REGISTRY[format]
-        payload, content_type = spec.encode(ids, matrix)
+        if n not in _BENCH_SIZES:
+            raise HTTPException(400, f"n must be one of {_BENCH_SIZES}, got {n}")
+        payload, content_type = _cached_bench_payload(format, n)
         return Response(content=payload, media_type=content_type)
 
 
