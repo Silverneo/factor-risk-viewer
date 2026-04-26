@@ -96,8 +96,10 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 16px;
-  height: 44px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 6px 16px;
+  min-height: 44px;
   background: #0f172a;
   color: #f8fafc;
   border-bottom: 1px solid #1e293b;
@@ -107,6 +109,8 @@ body {
 .topbar-left {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
   gap: 12px;
 }
 
@@ -168,8 +172,10 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 16px;
-  height: 36px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 4px 16px;
+  min-height: 36px;
   background: #1e293b;
   color: #cbd5e1;
   border-bottom: 1px solid #0f172a;
@@ -210,7 +216,7 @@ body {
 }
 .bc-sep { color: #475569; font-weight: 400; }
 
-.navbar-right { display: flex; align-items: center; gap: 12px; }
+.navbar-right { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; gap: 12px; justify-content: flex-end; }
 
 .drill-hdr {
   display: flex;
@@ -321,7 +327,10 @@ body {
 .topbar-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
   gap: 12px;
+  justify-content: flex-end;
 }
 
 /* ---------- factor search ------------------------------------------------- */
@@ -348,7 +357,6 @@ body {
 .search-dropdown {
   position: absolute;
   top: 100%;
-  left: 0;
   right: 0;
   margin-top: 4px;
   background: #ffffff;
@@ -359,6 +367,9 @@ body {
   overflow-y: auto;
   z-index: 1000;
   padding: 4px 0;
+  min-width: 380px;
+  width: max-content;
+  max-width: min(560px, 90vw);
 }
 .search-item {
   display: flex;
@@ -449,28 +460,117 @@ body {
   z-index: 1;
 }
 .search-item.tree {
-  padding-top: 4px;
-  padding-bottom: 4px;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
-.search-item.tree .match-row { gap: 4px; }
+.search-item.tree .match-row { gap: 6px; }
 .search-item.tree .tree-caret {
   display: inline-flex;
-  width: 14px;
-  height: 14px;
+  width: 22px;
+  height: 22px;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 12px;
   color: #475569;
   cursor: pointer;
-  border-radius: 2px;
+  border-radius: 3px;
   flex-shrink: 0;
 }
 .search-item.tree .tree-caret:hover { background: #e2e8f0; color: #0f172a; }
 .search-item.tree .tree-caret-spacer {
   display: inline-block;
-  width: 14px;
+  width: 22px;
   flex-shrink: 0;
 }
+
+/* ---------- search dropdown: multi-select ------------------------------- */
+.search-check {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+  background: #ffffff;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+}
+.search-check:hover { border-color: #2563eb; }
+.search-check.checked {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.search-item.picked { background: #f1f5ff; }
+.search-item.picked.active, .search-item.picked:hover { background: #e0eaff; }
+
+.search-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  z-index: 1;
+}
+.search-footer-count {
+  font-size: 11px;
+  color: #475569;
+  font-weight: 600;
+  flex: 1;
+}
+.search-footer-clear,
+.search-footer-apply {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid #cbd5e1;
+}
+.search-footer-clear {
+  background: #ffffff;
+  color: #475569;
+}
+.search-footer-clear:hover { background: #f1f5f9; border-color: #94a3b8; }
+.search-footer-apply {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+.search-footer-apply:hover { background: #1d4ed8; border-color: #1d4ed8; }
+
+/* ---------- breadcrumb: selection pill ---------------------------------- */
+.bc-selection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #f8fafc;
+  font-weight: 600;
+  padding: 2px 4px 2px 8px;
+  background: #1d4ed8;
+  border-radius: 2px;
+  font-size: 12px;
+}
+.bc-clear {
+  background: transparent;
+  border: none;
+  color: #dbeafe;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 2px;
+  font-weight: 700;
+}
+.bc-clear:hover { background: rgba(255,255,255,0.18); color: #ffffff; }
 
 /* ---------- help button + modal ------------------------------------------ */
 .help-btn {
@@ -1020,8 +1120,10 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
-  height: 44px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 6px 16px;
+  min-height: 44px;
   background: #1e293b;
   color: #cbd5e1;
   border-bottom: 1px solid #0f172a;
@@ -1040,8 +1142,10 @@ body {
 .cov-tools-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
   gap: 10px;
-  flex-shrink: 0;
+  justify-content: flex-end;
 }
 .cov-type-toggle {
   display: inline-flex;
@@ -1110,16 +1214,18 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
-  height: 44px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 6px 16px;
+  min-height: 44px;
   background: #1e293b;
   color: #cbd5e1;
   border-bottom: 1px solid #0f172a;
   flex-shrink: 0;
   gap: 12px;
 }
-.ts-tools-left { display: inline-flex; align-items: center; gap: 12px; }
-.ts-tools-right { display: inline-flex; align-items: center; gap: 12px; }
+.ts-tools-left { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; gap: 12px; }
+.ts-tools-right { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; gap: 12px; justify-content: flex-end; }
 
 .ts-paper {
   flex: 1;
@@ -1337,4 +1443,76 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+}
+
+/* ========== responsive layout =========================================== */
+/* Targets: laptop (1280–1599), big monitor (≥1600), tablet (≥768).         */
+/* Below 768 things still render but no longer optimized.                    */
+
+/* main-content needs relative positioning so the sidebar can overlay it
+   in the narrow breakpoint without affecting the wider layout. */
+.main-content { position: relative; }
+
+/* ---- ≤ 1280: tighten gaps; narrow the sidebar -------------------------- */
+@media (max-width: 1280px) {
+  .topbar { padding-left: 12px; padding-right: 12px; gap: 8px; }
+  .topbar-left, .topbar-right { gap: 8px; }
+  .navbar { padding-left: 12px; padding-right: 12px; }
+  .cov-toolbar, .ts-toolbar { padding-left: 12px; padding-right: 12px; }
+  .cov-tools-right, .ts-tools-right { gap: 8px; }
+  .grouping-sidebar { width: 320px; }
+  .search-wrap { width: 200px; }
+}
+
+/* ---- ≤ 1024 (small laptop / tablet landscape) -------------------------- */
+/* Wrapping is already always-on. Here we tighten chrome paddings further
+   and float the grouping sidebar over the grid so the grid keeps its full
+   width when the sidebar is open.                                          */
+@media (max-width: 1024px) {
+  .topbar { padding-left: 12px; padding-right: 12px; }
+  .navbar { padding-left: 12px; padding-right: 12px; }
+  .cov-toolbar, .ts-toolbar { padding-left: 12px; padding-right: 12px; }
+
+  .grouping-sidebar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: 340px;
+    z-index: 50;
+    box-shadow: -8px 0 20px rgba(15, 23, 42, 0.18);
+    border-left: 1px solid #cbd5e1;
+  }
+}
+
+/* ---- ≤ 900: drop the long view title (brand + tabs is enough) ---------- */
+@media (max-width: 900px) {
+  .title { display: none; }
+  .topbar-left { gap: 6px; }
+}
+
+/* ---- ≤ 768 (tablet portrait): simplify chrome -------------------------- */
+@media (max-width: 768px) {
+  .topbar, .navbar, .cov-toolbar, .ts-toolbar { padding-left: 8px; padding-right: 8px; }
+  .statusbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 24px;
+    padding: 2px 8px;
+    row-gap: 2px;
+  }
+  /* "layout: pf-rows" indicator is the lowest-value status item. */
+  .statusbar .muted { display: none; }
+  .grouping-sidebar { width: min(320px, 92vw); }
+  .search-wrap { width: 180px; }
+  /* Modal sits flush on tablets so users get usable height. */
+  .modal-content { width: 96vw; max-height: 92vh; }
+}
+
+/* ---- ≥ 1600 (big monitor): a touch more breathing room ---------------- */
+@media (min-width: 1600px) {
+  .topbar { padding: 0 24px; }
+  .navbar { padding: 0 24px; }
+  .cov-toolbar, .ts-toolbar, .cov-info { padding-left: 24px; padding-right: 24px; }
+  .statusbar { padding: 0 24px; }
 }

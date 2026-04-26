@@ -310,6 +310,7 @@ interface NodeSearchProps {
   excludeId?: string
   placeholder: string
   onPick: (id: string) => void
+  onPickMany?: (ids: string[]) => void
 }
 
 interface TreeItem extends SearchNode {
@@ -317,19 +318,24 @@ interface TreeItem extends SearchNode {
   _hasKids: boolean
 }
 
-function NodeSearch({ nodes, rootId, excludeId, placeholder, onPick }: NodeSearchProps) {
+function NodeSearch({ nodes, rootId, excludeId, placeholder, onPick, onPickMany }: NodeSearchProps) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [activeIdx, setActiveIdx] = useState(0)
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     rootId ? new Set([rootId]) : new Set()
   )
+  const [picked, setPicked] = useState<Set<string>>(() => new Set())
   const wrapRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const multi = !!onPickMany
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false)
+        setPicked(new Set())
+      }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -398,7 +404,31 @@ function NodeSearch({ nodes, rootId, excludeId, placeholder, onPick }: NodeSearc
     onPick(n.node_id)
     setQuery('')
     setOpen(false)
+    setPicked(new Set())
   }
+
+  const togglePicked = (id: string) => {
+    setPicked(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const commitPicked = () => {
+    if (!onPickMany || picked.size === 0) return
+    const ids = Array.from(picked)
+    if (ids.length === 1) {
+      onPick(ids[0])
+    } else {
+      onPickMany(ids)
+    }
+    setQuery('')
+    setOpen(false)
+    setPicked(new Set())
+  }
+
+  const clearPicked = () => setPicked(new Set())
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => {
@@ -411,13 +441,18 @@ function NodeSearch({ nodes, rootId, excludeId, placeholder, onPick }: NodeSearc
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!open) return
     if (items.length === 0) {
-      if (e.key === 'Escape') { setQuery(''); setOpen(false) }
+      if (e.key === 'Escape') { setQuery(''); setOpen(false); setPicked(new Set()) }
       return
     }
     if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, items.length - 1)) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)) }
-    else if (e.key === 'Enter') { e.preventDefault(); pick(items[activeIdx]) }
-    else if (e.key === 'Escape') { setQuery(''); setOpen(false) }
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (multi && (e.metaKey || e.ctrlKey) && picked.size > 0) commitPicked()
+      else if (multi && e.shiftKey) togglePicked(items[activeIdx].node_id)
+      else pick(items[activeIdx])
+    }
+    else if (e.key === 'Escape') { setQuery(''); setOpen(false); setPicked(new Set()) }
     else if (showTree && e.key === 'ArrowRight') {
       const cur = items[activeIdx] as TreeItem
       if (cur?._hasKids && !expanded.has(cur.node_id)) {
@@ -447,22 +482,38 @@ function NodeSearch({ nodes, rootId, excludeId, placeholder, onPick }: NodeSearc
       {open && items.length > 0 && (
         <div className="search-dropdown" role="listbox" ref={listRef}>
           {showTree && (
-            <div className="search-mode-hint">Browse hierarchy — click a group or leaf to set focus</div>
+            <div className="search-mode-hint">
+              {multi
+                ? 'Browse hierarchy — click row to set focus, or check boxes + Apply for multi-select'
+                : 'Browse hierarchy — click a group or leaf to set focus'}
+            </div>
           )}
           {items.map((n, i) => {
             const t = (n.tag ?? '').toLowerCase()
             const dotClass = `match-dot t-${t}`
             const isTreeItem = '_depth' in n
             const treeItem = n as TreeItem
+            const isPicked = picked.has(n.node_id)
             return (
               <button
                 key={n.node_id}
-                className={`search-item ${i === activeIdx ? 'active' : ''} ${isTreeItem ? 'tree' : ''}`}
+                className={`search-item ${i === activeIdx ? 'active' : ''} ${isTreeItem ? 'tree' : ''} ${isPicked ? 'picked' : ''}`}
                 style={isTreeItem ? { paddingLeft: 8 + treeItem._depth * 14 } : undefined}
                 onMouseEnter={() => setActiveIdx(i)}
                 onClick={() => pick(n)}
               >
                 <span className="match-row">
+                  {multi && (
+                    <span
+                      className={`search-check ${isPicked ? 'checked' : ''}`}
+                      role="checkbox"
+                      aria-checked={isPicked}
+                      onClick={(e) => { e.stopPropagation(); togglePicked(n.node_id) }}
+                      title="Add to multi-selection"
+                    >
+                      {isPicked ? '✓' : ''}
+                    </span>
+                  )}
                   {isTreeItem && treeItem._hasKids ? (
                     <span
                       className="tree-caret"
@@ -481,6 +532,21 @@ function NodeSearch({ nodes, rootId, excludeId, placeholder, onPick }: NodeSearc
               </button>
             )
           })}
+          {multi && picked.size > 0 && (
+            <div className="search-footer">
+              <span className="search-footer-count">{picked.size} selected</span>
+              <button
+                className="search-footer-clear"
+                onClick={(e) => { e.stopPropagation(); clearPicked() }}
+                type="button"
+              >Clear</button>
+              <button
+                className="search-footer-apply"
+                onClick={(e) => { e.stopPropagation(); commitPicked() }}
+                type="button"
+              >Apply</button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -833,55 +899,50 @@ interface CovarianceViewProps {
 function CovarianceView(props: CovarianceViewProps) {
   const { effectiveFactors, factorById, factorChildren, asOfDate, beginFetch, endFetch } = props
 
-  const [focusId, setFocusId] = useState<string>('F_ROOT')
+  const [focusId, setFocusIdRaw] = useState<string>('F_ROOT')
+  const [selectionIds, setSelectionIds] = useState<string[] | null>(null)
+  const setFocusId = useCallback((id: string) => {
+    setSelectionIds(null)
+    setFocusIdRaw(id)
+  }, [])
   const [type, setType] = useState<CovType>('corr')
   const [matrix, setMatrix] = useState<Map<string, number>>(new Map())
   const [downloading, setDownloading] = useState(false)
-  const [covDates, setCovDates] = useState<string[]>([])
-  const [covAsOf, setCovAsOf] = useState<string>('')
   const matrixRef = useRef(matrix)
   const gridRef = useRef<AgGridReact>(null)
 
-  // Covariance has its own (smaller) set of dates than the global as-of dropdown.
-  useEffect(() => {
-    fetch(`${API}/api/covariance/dates`)
-      .then(r => r.json() as Promise<string[]>)
-      .then(d => {
-        setCovDates(d)
-        setCovAsOf(prev => prev || d[0] || '')
-      })
-  }, [])
-
-  // If the global as-of changes and that date is one of the cov dates, follow.
-  useEffect(() => {
-    if (asOfDate && covDates.includes(asOfDate)) setCovAsOf(asOfDate)
-  }, [asOfDate, covDates])
-
-  const effectiveAsOfDate = covAsOf
+  const effectiveAsOfDate = asOfDate
 
   useEffect(() => {
     matrixRef.current = matrix
     gridRef.current?.api?.refreshCells({ force: true })
   }, [matrix])
 
-  // Effective leaf factor IDs under focus, capped at 200.
+  // Effective leaf factor IDs under focus (or under each picked node when in
+  // multi-selection mode), capped at 200. Order is preserved: leaves under the
+  // first picked node come first, then second, etc.
   const queryIds = useMemo(() => {
     const ids: string[] = []
-    const stack = [focusId]
     const seen = new Set<string>()
-    while (stack.length && ids.length < 200) {
-      const cur = stack.pop()!
-      if (seen.has(cur)) continue
-      seen.add(cur)
-      const kids = factorChildren.get(cur) ?? []
-      if (kids.length === 0 && cur !== 'F_ROOT') {
-        ids.push(cur)
-      } else {
-        for (const k of kids) stack.push(k.node_id)
+    const roots = selectionIds && selectionIds.length > 0 ? selectionIds : [focusId]
+    for (const root of roots) {
+      if (ids.length >= 200) break
+      const stack = [root]
+      while (stack.length && ids.length < 200) {
+        const cur = stack.pop()!
+        if (seen.has(cur)) continue
+        seen.add(cur)
+        const kids = factorChildren.get(cur) ?? []
+        if (kids.length === 0 && cur !== 'F_ROOT') {
+          ids.push(cur)
+        } else {
+          // Push in reverse so traversal preserves the natural left-to-right order.
+          for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i].node_id)
+        }
       }
     }
     return ids.slice(0, 200)
-  }, [focusId, factorChildren])
+  }, [focusId, selectionIds, factorChildren])
 
   useEffect(() => {
     if (!effectiveAsOfDate || queryIds.length === 0) {
@@ -1014,7 +1075,19 @@ function CovarianceView(props: CovarianceViewProps) {
       <div className="cov-toolbar">
         <div className="cov-tools-left">
           <span className="bc-label">FACTOR FOCUS</span>
-          {focusPath.map((node, i) => {
+          {selectionIds ? (
+            <span className="bc-selection" title={selectionIds
+              .map(id => factorById.get(id)?.path ?? id)
+              .join('\n')}>
+              Selection ({selectionIds.length})
+              <button
+                className="bc-clear"
+                onClick={() => setSelectionIds(null)}
+                aria-label="Clear selection"
+                title="Clear selection"
+              >×</button>
+            </span>
+          ) : focusPath.map((node, i) => {
             const isLast = i === focusPath.length - 1
             return (
               <Fragment key={node.node_id}>
@@ -1027,18 +1100,13 @@ function CovarianceView(props: CovarianceViewProps) {
           })}
         </div>
         <div className="cov-tools-right">
-          <label className="ctl">
-            <span>As of</span>
-            <select value={covAsOf} onChange={(e) => setCovAsOf(e.target.value)} disabled={!covDates.length}>
-              {covDates.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </label>
           <NodeSearch
             nodes={searchNodes}
             rootId="F_ROOT"
             excludeId="F_ROOT"
             placeholder="Find or browse factor…"
             onPick={setFocusId}
+            onPickMany={setSelectionIds}
           />
           <div className="cov-type-toggle">
             <button className={type === 'corr' ? 'active' : ''} onClick={() => setType('corr')}>Correlation</button>
@@ -1051,8 +1119,10 @@ function CovarianceView(props: CovarianceViewProps) {
       </div>
 
       <div className="cov-info">
-        Showing <b>{queryIds.length}</b> factor leaves under{' '}
-        <b>{displayName(factorById.get(focusId))}</b>
+        Showing <b>{queryIds.length}</b> factor leaves{' '}
+        {selectionIds
+          ? <>across <b>{selectionIds.length}</b> selected factor{selectionIds.length === 1 ? '' : 's'}</>
+          : <>under <b>{displayName(factorById.get(focusId))}</b></>}
         {' '}as a {queryIds.length}×{queryIds.length} {type === 'corr' ? 'correlation' : 'covariance'} matrix
         {' · as of '}<b>{effectiveAsOfDate}</b>
         {queryIds.length === 200 && <span className="cov-warn"> · capped at 200 (drill into a sub-branch for fewer)</span>}
@@ -1531,6 +1601,8 @@ export default function App() {
   const [layout, setLayout] = useState<Layout>('pf-rows')
   const [focusFactor, setFocusFactor] = useState<string>('F_ROOT')
   const [focusPortfolio, setFocusPortfolio] = useState<string>('P_0')
+  const [selectionFactor, setSelectionFactor] = useState<string[] | null>(null)
+  const [selectionPortfolio, setSelectionPortfolio] = useState<string[] | null>(null)
   const [depth, setDepth] = useState<number>(1)
   const [helpOpen, setHelpOpen] = useState<boolean>(false)
   const [pendingFetches, setPendingFetches] = useState<number>(0)
@@ -1539,6 +1611,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false)
   const [availableDates, setAvailableDates] = useState<string[]>([])
   const [asOfDate, setAsOfDate] = useState<string>('')
+  const [covDates, setCovDates] = useState<string[]>([])
+  const [covAsOf, setCovAsOf] = useState<string>('')
   const [compareToDate, setCompareToDate] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('both')
   const [appView, setAppView] = useState<AppView>('risk')
@@ -1581,6 +1655,14 @@ export default function App() {
     fetch(`${API}/api/factors`)
       .then(r => r.json())
       .then(setFactors)
+    // Covariance has its own (often smaller) date set — fetch it once so the
+    // global AS OF dropdown can offer only valid dates while on Covariance view.
+    fetch(`${API}/api/covariance/dates`)
+      .then(r => r.json() as Promise<string[]>)
+      .then(d => {
+        setCovDates(d)
+        setCovAsOf(prev => prev || d[0] || '')
+      })
   }, [beginFetch, endFetch, asOfDate])
 
   useEffect(() => {
@@ -1643,21 +1725,71 @@ export default function App() {
   }, [portfolios])
 
   const factorsAreRows = layout === 'fc-rows'
-  const colFocusId = factorsAreRows ? focusPortfolio : focusFactor
-  const setColFocusId = factorsAreRows ? setFocusPortfolio : setFocusFactor
+  const rawColFocusId = factorsAreRows ? focusPortfolio : focusFactor
+  const setRawColFocusId = factorsAreRows ? setFocusPortfolio : setFocusFactor
+  const selectionCol = factorsAreRows ? selectionPortfolio : selectionFactor
+  const setSelectionCol = factorsAreRows ? setSelectionPortfolio : setSelectionFactor
+
+  // Setting a real focus id (e.g. from a header drill or breadcrumb click) also
+  // clears any active multi-selection — we're navigating back into a real node.
+  const setColFocusId = useCallback((id: string) => {
+    setSelectionCol(null)
+    setRawColFocusId(id)
+  }, [setSelectionCol, setRawColFocusId])
+
+  // Reset the col-side selection if the user flips layout (selection scope is
+  // tied to the dimension that's currently on columns).
+  useEffect(() => {
+    setSelectionFactor(null)
+    setSelectionPortfolio(null)
+  }, [layout])
+
+  // Synthetic root used when multi-selection is active — its "children" are the
+  // picked node ids, so existing tree-walking code (visibleColIds, buildSubtree,
+  // focusPath) Just Works without further branching.
+  const SELECTION_ID = '__SELECTION__'
+  const colFocusId = selectionCol ? SELECTION_ID : rawColFocusId
+
+  const colByIdEffective = useMemo<Map<string, TreeLikeNode>>(() => {
+    const base: Map<string, TreeLikeNode> = factorsAreRows
+      ? (portfolioById as unknown as Map<string, TreeLikeNode>)
+      : (factorById as unknown as Map<string, TreeLikeNode>)
+    if (!selectionCol) return base
+    const m = new Map(base)
+    m.set(SELECTION_ID, {
+      node_id: SELECTION_ID,
+      parent_id: null,
+      name: `Selection (${selectionCol.length})`,
+      path: '',
+    })
+    return m
+  }, [factorsAreRows, factorById, portfolioById, selectionCol])
+
+  const colChildrenEffective = useMemo<Map<string | null, TreeLikeNode[]>>(() => {
+    const base = (factorsAreRows ? portfolioChildren : factorChildren) as unknown as Map<string | null, TreeLikeNode[]>
+    if (!selectionCol) return base
+    const byId = factorsAreRows
+      ? (portfolioById as unknown as Map<string, TreeLikeNode>)
+      : (factorById as unknown as Map<string, TreeLikeNode>)
+    const kids: TreeLikeNode[] = []
+    for (const id of selectionCol) {
+      const n = byId.get(id)
+      if (n) kids.push(n)
+    }
+    const m = new Map(base)
+    m.set(SELECTION_ID, kids)
+    return m
+  }, [factorsAreRows, factorById, portfolioById, factorChildren, portfolioChildren, selectionCol])
 
   const focusPath = useMemo(() => {
     const path: TreeLikeNode[] = []
-    const byId: Map<string, TreeLikeNode> = factorsAreRows
-      ? (portfolioById as unknown as Map<string, TreeLikeNode>)
-      : (factorById as unknown as Map<string, TreeLikeNode>)
-    let cur: TreeLikeNode | undefined = byId.get(colFocusId)
+    let cur: TreeLikeNode | undefined = colByIdEffective.get(colFocusId)
     while (cur) {
       path.unshift(cur)
-      cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
+      cur = cur.parent_id ? colByIdEffective.get(cur.parent_id) : undefined
     }
     return path
-  }, [factorsAreRows, colFocusId, factorById, portfolioById])
+  }, [colFocusId, colByIdEffective])
 
   const mergeCells = useCallback((cells: Cell[]) => {
     setCellMap(prev => {
@@ -1709,22 +1841,21 @@ export default function App() {
 
   // Walk col focus subtree, returning the IDs that should appear as columns at current depth.
   const visibleColIds = useMemo(() => {
-    const colChildren = factorsAreRows ? portfolioChildren : factorChildren
     const ids: string[] = []
     const walk = (nodeId: string, d: number) => {
       if (nodeId === colFocusId) {
-        const kids = colChildren.get(nodeId) ?? []
+        const kids = colChildrenEffective.get(nodeId) ?? []
         for (const k of kids) walk(k.node_id, 1)
         return
       }
-      const kids = colChildren.get(nodeId) ?? []
+      const kids = colChildrenEffective.get(nodeId) ?? []
       if (kids.length === 0) { ids.push(nodeId); return }
       if (d >= depth) { ids.push(nodeId); return }
       for (const k of kids) walk(k.node_id, d + 1)
     }
     walk(colFocusId, 0)
     return ids
-  }, [factorsAreRows, depth, colFocusId, factorChildren, portfolioChildren])
+  }, [depth, colFocusId, colChildrenEffective])
 
   // Initial visible row IDs: tied to AG Grid's groupDefaultExpanded={1} behaviour — only top-of-tree.
   // For pf-rows we actually fetch all portfolios upfront (small n=500). For fc-rows we only fetch
@@ -1785,7 +1916,7 @@ export default function App() {
   }, [factorChildren, visibleColIds, fetchMissing, expandToLeavesIfOverridden])
 
   const columnDefs = useMemo<(ColDef | ColGroupDef)[]>(() => {
-    const colChildren = factorsAreRows ? portfolioChildren : factorChildren
+    const colChildren = colChildrenEffective
     if (!colChildren.size) return []
 
     const buildSubtree = (node: TreeLikeNode, depthFromFocus: number): ColDef | ColGroupDef => {
@@ -1849,7 +1980,7 @@ export default function App() {
     }
     const focusKids = colChildren.get(colFocusId) ?? []
     return focusKids.map(k => buildSubtree(k, 1))
-  }, [factorsAreRows, depth, colFocusId, factorChildren, portfolioChildren, setColFocusId, compareToDate, viewMode])
+  }, [depth, colFocusId, colChildrenEffective, setColFocusId, compareToDate, viewMode])
 
   const rowData = useMemo(() => {
     if (factorsAreRows) {
@@ -1975,17 +2106,29 @@ export default function App() {
               onClick={() => setAppView('bench')}
             >Bench</button>
           </div>
-          {appView !== 'timeseries' && appView !== 'bench' && <div className="date-picker">
+          {(appView === 'risk' || appView === 'covariance') && <div className="date-picker">
             <span className="dp-label">AS OF</span>
-            <select
-              value={asOfDate}
-              onChange={(e) => setAsOfDate(e.target.value)}
-              disabled={!availableDates.length}
-            >
-              {availableDates.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-            {appView === 'risk' && (
+            {appView === 'covariance' ? (
+              <select
+                value={covAsOf}
+                onChange={(e) => setCovAsOf(e.target.value)}
+                disabled={!covDates.length}
+                title={covDates.length <= 1
+                  ? 'Covariance is currently available for one date — backfill more in build_snapshot.py'
+                  : undefined}
+              >
+                {covDates.length === 0 && <option value="">no cov dates</option>}
+                {covDates.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            ) : (
               <>
+                <select
+                  value={asOfDate}
+                  onChange={(e) => setAsOfDate(e.target.value)}
+                  disabled={!availableDates.length}
+                >
+                  {availableDates.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
                 <span className="dp-vs">vs</span>
                 <select
                   value={compareToDate ?? ''}
@@ -2033,6 +2176,7 @@ export default function App() {
             excludeId={factorsAreRows ? undefined : 'F_ROOT'}
             placeholder={factorsAreRows ? 'Find or browse portfolio…' : 'Find or browse factor…'}
             onPick={setColFocusId}
+            onPickMany={setSelectionCol}
           />
           <label className="ctl">
             <span>Metric</span>
@@ -2063,7 +2207,19 @@ export default function App() {
       <div className="navbar">
         <div className="breadcrumb">
           <span className="bc-label">{factorsAreRows ? 'PORTFOLIO FOCUS' : 'FACTOR FOCUS'}</span>
-          {focusPath.map((node, i) => {
+          {selectionCol ? (
+            <span className="bc-selection" title={selectionCol
+              .map(id => (factorsAreRows ? portfolioById.get(id)?.path : factorById.get(id)?.path) ?? id)
+              .join('\n')}>
+              Selection ({selectionCol.length})
+              <button
+                className="bc-clear"
+                onClick={() => setSelectionCol(null)}
+                aria-label="Clear selection"
+                title="Clear selection"
+              >×</button>
+            </span>
+          ) : focusPath.map((node, i) => {
             const isLast = i === focusPath.length - 1
             return (
               <Fragment key={node.node_id}>
@@ -2152,9 +2308,9 @@ export default function App() {
           effectiveFactors={effectiveFactors}
           factorById={factorById}
           factorChildren={factorChildren}
-          availableDates={availableDates}
-          asOfDate={asOfDate}
-          setAsOfDate={setAsOfDate}
+          availableDates={covDates}
+          asOfDate={covAsOf}
+          setAsOfDate={setCovAsOf}
           beginFetch={beginFetch}
           endFetch={endFetch}
         />
