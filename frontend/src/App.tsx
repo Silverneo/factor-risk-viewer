@@ -1088,13 +1088,39 @@ interface TimeSeriesViewProps {
   endFetch: () => void
 }
 
-// Print-financial editorial palette — terra, navy, ochre, forest, oxblood.
+// Screen-tuned palette for dark canvas — picked for contrast on #0B0F1A.
 const FACTOR_TYPE_COLORS: Record<string, string> = {
-  Country:  '#B7472A',
-  Industry: '#1B3A57',
-  Style:    '#9B6E2C',
-  Currency: '#2E5340',
-  Specific: '#5A1F2E',
+  Country:  '#2A6BFF',
+  Industry: '#FF7849',
+  Style:    '#37D399',
+  Currency: '#A463FF',
+  Specific: '#FFC857',
+}
+
+type Period = '1M' | '3M' | 'FYTD' | 'CYTD' | '1Y' | 'All'
+const PERIODS: Period[] = ['1M', '3M', 'FYTD', 'CYTD', '1Y', 'All']
+const PERIOD_LS_KEY = 'frv-ts-period-v1'
+const FY_START_MONTH = 3 // April (0-indexed)
+
+function loadPeriod(): Period {
+  try {
+    const v = localStorage.getItem(PERIOD_LS_KEY)
+    if (v && PERIODS.includes(v as Period)) return v as Period
+  } catch { /* ignore */ }
+  return 'FYTD'
+}
+
+// Returns the inclusive lower-bound date for a period, anchored to `today`.
+// `null` means no lower bound (e.g. for 'All').
+function periodStart(period: Period, today: Date): Date | null {
+  if (period === 'All') return null
+  if (period === '1M') return new Date(today.getTime() - 30 * 86_400_000)
+  if (period === '3M') return new Date(today.getTime() - 90 * 86_400_000)
+  if (period === '1Y') return new Date(today.getTime() - 365 * 86_400_000)
+  if (period === 'CYTD') return new Date(today.getFullYear(), 0, 1)
+  // FYTD: most recent 1 Apr that is <= today
+  const fyThisYear = new Date(today.getFullYear(), FY_START_MONTH, 1)
+  return today >= fyThisYear ? fyThisYear : new Date(today.getFullYear() - 1, FY_START_MONTH, 1)
 }
 
 function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProps) {
@@ -1102,6 +1128,10 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
   const [metric, setMetric] = useState<Metric>('ctr_vol')
   const [chartMode, setChartMode] = useState<ChartMode>('area')
   const [data, setData] = useState<TimeSeriesData | null>(null)
+  const [period, setPeriod] = useState<Period>(loadPeriod)
+  const [isolatedSeries, setIsolatedSeries] = useState<string | null>(null)
+
+  useEffect(() => { try { localStorage.setItem(PERIOD_LS_KEY, period) } catch { /* ignore */ } }, [period])
 
   const portfolioName = useMemo(
     () => portfolios.find(p => p.node_id === portfolioId)?.name ?? portfolioId,
@@ -1119,39 +1149,51 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
 
   const isPct = METRIC_IS_PCT[metric]
 
+  // Apply the period filter to dates / series / totals.
+  const filtered = useMemo(() => {
+    if (!data || !data.dates.length) return null
+    const lastDate = new Date(data.dates[data.dates.length - 1])
+    const start = periodStart(period, lastDate)
+    let keep: number[]
+    if (start === null) {
+      keep = data.dates.map((_, i) => i)
+    } else {
+      keep = data.dates.flatMap((d, i) => (new Date(d) >= start ? [i] : []))
+    }
+    if (!keep.length) keep = [data.dates.length - 1] // always show at least the latest point
+    return {
+      dates: keep.map(i => data.dates[i]),
+      series: data.series.map(s => ({ ...s, values: keep.map(i => s.values[i]) })),
+      totals: keep.map(i => data.totals[i]),
+    }
+  }, [data, period])
+
   const chartOptions = useMemo<AgChartOptions>(() => {
-    if (!data || !data.dates.length) {
+    if (!filtered || !filtered.dates.length) {
       return { data: [], series: [], background: { visible: false } }
     }
 
-    // Optionally resample to month-end before charting.
-    let dates = data.dates
-    let seriesValues = data.series.map(s => s.values)
-    let totals = data.totals
+    let dates = filtered.dates
+    let seriesValues = filtered.series.map(s => s.values)
+    let totals = filtered.totals
     if (chartMode === 'bar-monthly') {
       const buckets = new Map<string, number[]>()
-      // Map each original date to month key 'YYYY-MM'
-      data.dates.forEach((d, idx) => {
+      filtered.dates.forEach((d, idx) => {
         const key = d.slice(0, 7)
         const arr = buckets.get(key) ?? []
         arr.push(idx)
         buckets.set(key, arr)
       })
       const monthKeys = [...buckets.keys()].sort()
-      // For each month, take the LAST observation in that month (typical EOM)
-      const pickIdx = monthKeys.map(k => {
-        const idxs = buckets.get(k)!
-        return idxs[idxs.length - 1]
-      })
+      const pickIdx = monthKeys.map(k => buckets.get(k)![buckets.get(k)!.length - 1])
       dates = monthKeys.map(k => k + '-01')
-      seriesValues = data.series.map(s => pickIdx.map(i => s.values[i]))
-      totals = pickIdx.map(i => data.totals[i])
+      seriesValues = filtered.series.map(s => pickIdx.map(i => s.values[i]))
+      totals = pickIdx.map(i => filtered.totals[i])
     }
 
-    // Build chart rows.
     const rows = dates.map((d, i) => {
       const row: Record<string, any> = { date: new Date(d) }
-      data.series.forEach((s, sIdx) => {
+      filtered.series.forEach((s, sIdx) => {
         row[s.factor_id] = seriesValues[sIdx][i] ?? 0
       })
       row.total = totals[i] ?? null
@@ -1163,15 +1205,42 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
       chartMode === 'lines' ? 'line' :
       'bar'
     const stacked = chartMode === 'area' || stackType === 'bar'
-    const fontFamily = '"JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace'
-    const uiFontFamily = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
-    const labelColor = '#5C5147'
-    const titleColor = '#1B1813'
-    const axisLineColor = '#C9BFA8'
-    const gridColor = '#EAE2CD'
+    const fontMono = '"JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace'
+    const fontUI = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
+    const labelColor = '#7A8294'
+    const gridColor = '#1B2233'
+    const totalColor = '#E6E8EE'
 
-    const stackedSeries = data.series.map(s => {
+    // ag-charts v13 shared-mode tooltip iterates series in array order. To get
+    // a compact one-line-per-series readout we put everything in `title`
+    // (swatch + title go on one line; data rows go below). Rank is computed
+    // against the hovered datum's other series values.
+    const seriesTooltipRenderer = (params: any) => {
+      const totalV = params.datum?.total as number | undefined
+      const totalAbs = typeof totalV === 'number' && totalV !== 0 ? Math.abs(totalV) : null
+      const v = params.datum?.[params.yKey] as number | undefined
+      // rank = position when all series at this date are sorted desc by value
+      const allValues = filtered.series
+        .map(s => params.datum?.[s.factor_id])
+        .filter((x: unknown): x is number => typeof x === 'number' && isFinite(x))
+        .sort((a, b) => b - a)
+      const rank = (typeof v === 'number')
+        ? allValues.indexOf(v) + 1
+        : 0
+      const valStr = fmtCellVal(v)
+      const pctSuffix = (typeof v === 'number' && totalAbs !== null)
+        ? ` (${((v / totalAbs) * 100).toFixed(0)}%)`
+        : ''
+      const rankPrefix = rank > 0 ? `#${rank} ` : ''
+      return {
+        title: `${rankPrefix}${params.yName}  ${valStr}${pctSuffix}`,
+        data: [],
+      }
+    }
+
+    const stackedSeries = filtered.series.map(s => {
       const color = FACTOR_TYPE_COLORS[s.name] ?? '#94a3b8'
+      const dimmed = isolatedSeries !== null && isolatedSeries !== s.factor_id
       const base: any = {
         type: stackType,
         xKey: 'date',
@@ -1179,12 +1248,13 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
         yName: s.name,
         fill: color,
         stroke: color,
+        tooltip: { renderer: seriesTooltipRenderer },
       }
       if (stacked) base.stacked = true
       if (stackType === 'area') {
         return {
           ...base,
-          fillOpacity: 0.78,
+          fillOpacity: dimmed ? 0.08 : 0.78,
           strokeWidth: 0,
           marker: { enabled: false },
         }
@@ -1193,142 +1263,131 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
         return {
           ...base,
           strokeWidth: 1.6,
-          marker: { enabled: true, size: 3, shape: 'circle', fill: color, strokeWidth: 0 },
+          strokeOpacity: dimmed ? 0.18 : 1,
+          marker: { enabled: true, size: 3, shape: 'circle', fill: color, fillOpacity: dimmed ? 0.18 : 1, strokeWidth: 0 },
         }
       }
-      return base
+      return { ...base, fillOpacity: dimmed ? 0.18 : 1 }
     })
     const totalLine = {
       type: 'line' as const,
       xKey: 'date',
       yKey: 'total',
       yName: 'Total',
-      stroke: '#0f172a',
-      strokeWidth: 1.8,
-      marker: { enabled: true, size: 4, shape: 'circle', fill: '#0f172a', strokeWidth: 0 },
+      stroke: totalColor,
+      strokeWidth: 1.6,
+      strokeOpacity: isolatedSeries === null ? 1 : 0.35,
+      marker: { enabled: true, size: 3, shape: 'circle', fill: totalColor, strokeWidth: 0 },
+      tooltip: {
+        renderer: (params: any) => ({
+          title: `Total  ${fmtCellVal(params.datum?.total)}`,
+          data: [],
+        }),
+      },
     }
 
     const xAxisType = chartMode === 'bar-cat' ? 'category' : 'time'
     const xLabelFormatter = (params: any) => {
       const d = params.value
-      if (d instanceof Date) {
-        return d.toLocaleDateString(undefined, { year: '2-digit', month: 'short', day: 'numeric' })
-      }
+      if (d instanceof Date) return d.toLocaleDateString(undefined, { year: '2-digit', month: 'short', day: 'numeric' })
       return String(d).slice(0, 10)
     }
     const yLabelFormatter = (p: any) =>
       isPct ? (p.value * 100).toFixed(1) + '%' : p.value.toFixed(3)
+    const fmtCellVal = (v: any) =>
+      typeof v === 'number' && isFinite(v)
+        ? (isPct ? (v * 100).toFixed(2) + '%' : v.toFixed(4))
+        : '—'
 
     return {
-      theme: 'ag-financial',
+      theme: 'ag-default-dark' as any,
       data: rows,
-      series: [...stackedSeries, totalLine],
+      // totalLine first in array → shown FIRST in shared tooltip. The line is
+      // still visible in the chart because the total runs above all the
+      // stacked-area bands (it's the sum), so it doesn't get occluded.
+      series: [totalLine, ...stackedSeries],
       axes: [
         {
           type: xAxisType as any,
           position: 'bottom',
-          label: {
-            formatter: xLabelFormatter,
-            fontSize: 10,
-            fontFamily,
-            color: labelColor,
-          },
-          line: { stroke: axisLineColor, width: 1 },
-          tick: { stroke: axisLineColor, width: 1, size: 4 },
+          label: { formatter: xLabelFormatter, fontSize: 10, fontFamily: fontMono, color: labelColor },
+          line: { stroke: gridColor, width: 1 },
+          tick: { stroke: gridColor, width: 1, size: 4 },
           gridLine: { enabled: false },
-          crosshair: { enabled: true, snap: true, stroke: '#94a3b8', strokeWidth: 1, lineDash: [3, 3] },
+          crosshair: { enabled: true, snap: true, stroke: '#7A8294', strokeWidth: 1, lineDash: [3, 4], label: { enabled: false } },
           title: { enabled: false },
         },
         {
           type: 'number',
           position: 'left',
-          label: {
-            fontSize: 10,
-            fontFamily,
-            color: labelColor,
-            formatter: yLabelFormatter,
-          },
+          label: { fontSize: 10, fontFamily: fontMono, color: labelColor, formatter: yLabelFormatter },
           line: { width: 0 },
           tick: { size: 0 },
           gridLine: { enabled: true, style: [{ stroke: gridColor, lineDash: [] }] },
           crosshair: { enabled: false },
-          title: { enabled: true, text: METRIC_LABEL[metric], fontSize: 10, fontFamily, color: titleColor, fontWeight: 'normal' as any },
+          title: { enabled: false },
         },
       ],
-      legend: {
-        position: 'top',
-        spacing: 12,
-        item: {
-          marker: { size: 9, shape: 'square' as any },
-          label: { fontSize: 11, fontFamily: uiFontFamily, color: titleColor },
-          paddingX: 14,
-          paddingY: 4,
-        },
-      },
-      background: { fill: '#FAF7EE' },
-      padding: { top: 8, right: 18, bottom: 8, left: 8 },
+      legend: { enabled: false }, // we render a custom DOM legend so we can do isolation
+      background: { fill: '#0B0F1A' },
+      padding: { top: 12, right: 18, bottom: 12, left: 8 },
       animation: { enabled: false },
       tooltip: {
         enabled: true,
         delay: 0,
-        renderer: (params: any) => {
-          const d = params.datum?.[params.xKey]
-          const dateLabel = d instanceof Date
-            ? d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-            : String(d)
-          const v = params.datum?.[params.yKey]
-          const valStr = typeof v === 'number'
-            ? (isPct ? (v * 100).toFixed(2) + '%' : v.toFixed(4))
-            : '—'
-          const swatch = `<span style="display:inline-block;width:9px;height:9px;background:${params.color};margin-right:6px;vertical-align:1px"></span>`
-          return {
-            title: `<span style="font-family:${uiFontFamily};font-size:9px;color:#85725A;text-transform:uppercase;letter-spacing:0.14em">${dateLabel}</span>`,
-            content: `<div style="font-family:${uiFontFamily};font-size:12px;color:#1B1813;padding:2px 0">${swatch}<b style="font-weight:500">${params.yName}</b><span style="font-family:${fontFamily};font-weight:600;margin-left:8px">${valStr}</span></div>`,
-          }
-        },
+        mode: 'shared' as any, // gather all series into one panel at the hovered x
+        range: 'nearest' as any, // fire anywhere in the chart area, not just on a node
       },
       navigator: { enabled: false },
     }
-  }, [data, chartMode, isPct, metric])
+  }, [filtered, chartMode, isPct, isolatedSeries, metric])
 
   const portfolioOptions = useMemo(() =>
     portfolios.slice().sort((a, b) => a.path.localeCompare(b.path)),
     [portfolios],
   )
 
+  // Stats are scoped to the filtered window.
   const stats = useMemo(() => {
-    if (!data || data.totals.length === 0) return null
-    const finite = data.totals.filter((v): v is number => typeof v === 'number' && isFinite(v))
-    if (!finite.length) return null
-    const latest = finite[finite.length - 1]
-    const earliest = finite[0]
-    const hi = Math.max(...finite)
-    const lo = Math.min(...finite)
-    const delta = latest - earliest
-    return {
-      latest,
-      delta,
-      hi,
-      lo,
-      firstDate: data.dates[0],
-      lastDate: data.dates[data.dates.length - 1],
+    if (!filtered || filtered.totals.length === 0) return null
+    const totals = filtered.totals
+    const dates = filtered.dates
+    let firstIdx = -1, lastIdx = -1
+    let hi = -Infinity, lo = Infinity, hiIdx = -1, loIdx = -1
+    for (let i = 0; i < totals.length; i++) {
+      const v = totals[i]
+      if (typeof v !== 'number' || !isFinite(v)) continue
+      if (firstIdx < 0) firstIdx = i
+      lastIdx = i
+      if (v > hi) { hi = v; hiIdx = i }
+      if (v < lo) { lo = v; loIdx = i }
     }
-  }, [data])
+    if (firstIdx < 0) return null
+    return {
+      latest: totals[lastIdx]!,
+      delta: totals[lastIdx]! - totals[firstIdx]!,
+      hi, lo,
+      lastDate: dates[lastIdx], firstDate: dates[firstIdx],
+      hiDate: dates[hiIdx], loDate: dates[loIdx],
+    }
+  }, [filtered])
 
   const fmtVal = (v: number | null | undefined) => {
     if (typeof v !== 'number' || !isFinite(v)) return '—'
     return isPct ? (v * 100).toFixed(2) + '%' : v.toFixed(3)
   }
-  const fmtDelta = (v: number | null | undefined) => {
-    if (typeof v !== 'number' || !isFinite(v)) return '—'
+  const fmtDelta = (v: number | null | undefined): { value: string; unit: string } => {
+    if (typeof v !== 'number' || !isFinite(v)) return { value: '—', unit: '' }
     if (isPct) {
-      const bps = v * 10000
-      const rounded = Math.round(bps)
-      const sign = rounded > 0 ? '+' : rounded < 0 ? '' : ''
-      return sign + rounded + ' bps'
+      const bps = Math.round(v * 10000)
+      return { value: (bps > 0 ? '+' : '') + bps, unit: 'bps' }
     }
-    const sign = v > 0 ? '+' : ''
-    return sign + v.toFixed(3)
+    return { value: (v > 0 ? '+' : '') + v.toFixed(3), unit: '' }
+  }
+  const fmtShortDate = (s: string | undefined) => {
+    if (!s) return ''
+    const d = new Date(s)
+    return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
   }
 
   return (
@@ -1356,78 +1415,91 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
         </div>
         <div className="ts-tools-right">
           <div className="chart-mode-toggle" role="tablist">
-            <button
-              className={chartMode === 'area' ? 'active' : ''}
-              onClick={() => setChartMode('area')}
-              title="Stacked area on a time axis — composition over time, handles irregular dates"
-            >Stacked Area</button>
-            <button
-              className={chartMode === 'lines' ? 'active' : ''}
-              onClick={() => setChartMode('lines')}
-              title="One line per factor — best for comparing factor trajectories"
-            >Lines</button>
-            <button
-              className={chartMode === 'bar-cat' ? 'active' : ''}
-              onClick={() => setChartMode('bar-cat')}
-              title="Categorical x-axis: each date is one column, gaps not preserved"
-            >Bars (categorical)</button>
-            <button
-              className={chartMode === 'bar-monthly' ? 'active' : ''}
-              onClick={() => setChartMode('bar-monthly')}
-              title="Resample to month-end before charting"
-            >Bars (monthly)</button>
+            <button className={chartMode === 'area' ? 'active' : ''} onClick={() => setChartMode('area')} title="Stacked area on a time axis — composition over time">Stacked Area</button>
+            <button className={chartMode === 'lines' ? 'active' : ''} onClick={() => setChartMode('lines')} title="One line per factor — best for comparing trajectories">Lines</button>
+            <button className={chartMode === 'bar-cat' ? 'active' : ''} onClick={() => setChartMode('bar-cat')} title="Categorical x-axis: each date is one column">Bars (cat)</button>
+            <button className={chartMode === 'bar-monthly' ? 'active' : ''} onClick={() => setChartMode('bar-monthly')} title="Resample to month-end before charting">Bars (monthly)</button>
           </div>
         </div>
       </div>
       <div className="ts-paper">
         <header className="ts-edhdr">
           <div className="ts-edhdr-left">
-            <span className="ts-eyebrow">Risk Decomposition</span>
+            <span className="ts-eyebrow">Risk Decomposition · {METRIC_LABEL[metric]}</span>
             <h2 className="ts-edhdr-title">{portfolioName}</h2>
-            <p className="ts-edhdr-sub"><i>{METRIC_LABEL[metric]}</i></p>
           </div>
-          {stats && (
-            <dl className="ts-stats">
-              <div className="ts-stat">
-                <dt>Latest</dt>
-                <dd className="ts-stat-val">{fmtVal(stats.latest)}</dd>
-                <dd className="ts-stat-meta">{stats.lastDate}</dd>
+          <div className="ts-edhdr-right">
+            <div className="ts-period" role="tablist" aria-label="Time period">
+              {PERIODS.map(p => (
+                <button
+                  key={p}
+                  className={period === p ? 'active' : ''}
+                  role="tab"
+                  aria-selected={period === p}
+                  onClick={() => setPeriod(p)}
+                >{p}</button>
+              ))}
+            </div>
+            {data && (
+              <div className="ts-legend" role="group" aria-label="Series legend (click to isolate)">
+                {data.series.map(s => {
+                  const color = FACTOR_TYPE_COLORS[s.name] ?? '#94a3b8'
+                  const dimmed = isolatedSeries !== null && isolatedSeries !== s.factor_id
+                  return (
+                    <button
+                      key={s.factor_id}
+                      className={`ts-legend-item${dimmed ? ' is-dim' : ''}${isolatedSeries === s.factor_id ? ' is-active' : ''}`}
+                      onClick={() => setIsolatedSeries(prev => prev === s.factor_id ? null : s.factor_id)}
+                      title={isolatedSeries === s.factor_id ? 'Click to clear isolation' : `Isolate ${s.name} (others fade)`}
+                    >
+                      <span className="ts-legend-swatch" style={{ background: color }} />
+                      <span>{s.name}</span>
+                    </button>
+                  )
+                })}
+                {isolatedSeries !== null && (
+                  <button className="ts-legend-clear" onClick={() => setIsolatedSeries(null)} title="Clear isolation">clear</button>
+                )}
               </div>
-              <div className="ts-stat">
-                <dt>{data?.dates.length ?? 0}-pt change</dt>
-                <dd className={`ts-stat-val ${stats.delta > 0 ? 'is-up' : stats.delta < 0 ? 'is-dn' : ''}`}>
-                  {fmtDelta(stats.delta)}
-                </dd>
-                <dd className="ts-stat-meta">vs {stats.firstDate}</dd>
-              </div>
-              <div className="ts-stat">
-                <dt>Period high</dt>
-                <dd className="ts-stat-val">{fmtVal(stats.hi)}</dd>
-                <dd className="ts-stat-meta">over {data?.dates.length ?? 0} obs</dd>
-              </div>
-              <div className="ts-stat">
-                <dt>Period low</dt>
-                <dd className="ts-stat-val">{fmtVal(stats.lo)}</dd>
-                <dd className="ts-stat-meta">over {data?.dates.length ?? 0} obs</dd>
-              </div>
-            </dl>
-          )}
+            )}
+          </div>
         </header>
-        <div className="ts-rule" aria-hidden="true" />
+        {stats && (
+          <dl className="ts-stats">
+            <div className="ts-stat">
+              <dt>Latest</dt>
+              <dd className="ts-stat-val">{fmtVal(stats.latest)}</dd>
+              <dd className="ts-stat-meta">{fmtShortDate(stats.lastDate)}</dd>
+            </div>
+            <div className="ts-stat">
+              <dt>Δ {period}</dt>
+              <dd className={`ts-stat-val ${stats.delta > 0 ? 'is-up' : stats.delta < 0 ? 'is-dn' : ''}`}>
+                {(() => {
+                  const d = fmtDelta(stats.delta)
+                  return <>{d.value}{d.unit && <span className="ts-stat-unit">{d.unit}</span>}</>
+                })()}
+              </dd>
+              <dd className="ts-stat-meta">vs {fmtShortDate(stats.firstDate)}</dd>
+            </div>
+            <div className="ts-stat">
+              <dt>Period high</dt>
+              <dd className="ts-stat-val">{fmtVal(stats.hi)}</dd>
+              <dd className="ts-stat-meta">{fmtShortDate(stats.hiDate)}</dd>
+            </div>
+            <div className="ts-stat">
+              <dt>Period low</dt>
+              <dd className="ts-stat-val">{fmtVal(stats.lo)}</dd>
+              <dd className="ts-stat-meta">{fmtShortDate(stats.loDate)}</dd>
+            </div>
+          </dl>
+        )}
         <div className="ts-chart">
-          {data && data.dates.length > 0 ? (
+          {filtered && filtered.dates.length > 0 ? (
             <AgCharts options={chartOptions} />
           ) : (
             <div className="ts-empty">No data for this selection.</div>
           )}
         </div>
-        <footer className="ts-edftr">
-          <span>Source · Factor Risk Viewer</span>
-          <span className="ts-edftr-sep">·</span>
-          <span>Snapshot stack of {data?.dates.length ?? 0} observations</span>
-          <span className="ts-edftr-sep">·</span>
-          <span>{stats ? `${stats.firstDate} — ${stats.lastDate}` : '—'}</span>
-        </footer>
       </div>
     </div>
   )
