@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import struct
 from dataclasses import dataclass
 from typing import Callable
 
@@ -89,6 +90,31 @@ def _decode_d(payload: bytes) -> tuple[list[str], np.ndarray]:
     return ids, matrix
 
 
+# ---------- Format E: raw Float32Array + JSON sidecar ------------------------
+# Wire layout (all little-endian):
+#   u32 sidecar_len
+#   sidecar_len bytes: utf-8 JSON {"factor_ids": [...]}
+#   u32 n  (matrix side length, sanity check)
+#   n*n*4 bytes: row-major float32 matrix
+
+def _encode_e(ids: list[str], matrix: np.ndarray) -> tuple[bytes, str]:
+    sidecar = json.dumps({"factor_ids": ids}).encode("utf-8")
+    n = len(ids)
+    header = struct.pack("<I", len(sidecar)) + sidecar + struct.pack("<I", n)
+    body = matrix.astype(np.float32, copy=False).tobytes(order="C")
+    return header + body, "application/octet-stream"
+
+
+def _decode_e(payload: bytes) -> tuple[list[str], np.ndarray]:
+    (sidecar_len,) = struct.unpack_from("<I", payload, 0)
+    sidecar = json.loads(payload[4 : 4 + sidecar_len])
+    ids = sidecar["factor_ids"]
+    (n,) = struct.unpack_from("<I", payload, 4 + sidecar_len)
+    body_offset = 4 + sidecar_len + 4
+    matrix = np.frombuffer(payload, dtype=np.float32, count=n * n, offset=body_offset)
+    return ids, matrix.reshape(n, n).copy()
+
+
 REGISTRY: dict[str, FormatSpec] = {
     "A": FormatSpec(
         name="list-of-dict JSON",
@@ -107,5 +133,11 @@ REGISTRY: dict[str, FormatSpec] = {
         description="Binary columnar; ids in schema metadata; FixedSizeList<float32> rows",
         encode=_encode_d,
         decode=_decode_d,
+    ),
+    "E": FormatSpec(
+        name="Float32Array + JSON sidecar",
+        description="Lower-bound binary: u32 sidecar_len, JSON {ids}, u32 n, row-major float32",
+        encode=_encode_e,
+        decode=_decode_e,
     ),
 }
