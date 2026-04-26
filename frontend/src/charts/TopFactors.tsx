@@ -148,7 +148,7 @@ export function TopFactors(props: ChartProps) {
         {
           type: 'category',
           position: 'left',
-          label: { color: '#cbd5e1', fontSize: 11 },
+          label: { color: '#e2e8f0', fontSize: 11, fontWeight: 500 },
           line: { stroke: '#334155' },
           tick: { stroke: '#334155' },
         },
