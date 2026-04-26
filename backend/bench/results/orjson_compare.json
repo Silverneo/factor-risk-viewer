@@ -1,0 +1,74 @@
+[
+  {
+    "n": 200,
+    "variant": "A.stdlib",
+    "encode_ms": 42.118500103242695,
+    "raw_bytes": 1865255
+  },
+  {
+    "n": 200,
+    "variant": "A.orjson",
+    "encode_ms": 11.004699976183474,
+    "raw_bytes": 1625054
+  },
+  {
+    "n": 200,
+    "variant": "B.stdlib",
+    "encode_ms": 13.443699921481311,
+    "raw_bytes": 829656
+  },
+  {
+    "n": 200,
+    "variant": "B.orjson_np",
+    "encode_ms": 0.9246000554412603,
+    "raw_bytes": 443317
+  },
+  {
+    "n": 1000,
+    "variant": "A.stdlib",
+    "encode_ms": 1010.4254999896511,
+    "raw_bytes": 47546801
+  },
+  {
+    "n": 1000,
+    "variant": "A.orjson",
+    "encode_ms": 515.1082000229508,
+    "raw_bytes": 41545880
+  },
+  {
+    "n": 1000,
+    "variant": "B.stdlib",
+    "encode_ms": 585.1389999734238,
+    "raw_bytes": 20768802
+  },
+  {
+    "n": 1000,
+    "variant": "B.orjson_np",
+    "encode_ms": 45.17699999269098,
+    "raw_bytes": 11077835
+  },
+  {
+    "n": 3600,
+    "variant": "A.stdlib",
+    "encode_ms": 13343.8028000528,
+    "raw_bytes": 637067499
+  },
+  {
+    "n": 3600,
+    "variant": "A.orjson",
+    "encode_ms": 4094.1123000811785,
+    "raw_bytes": 559305166
+  },
+  {
+    "n": 3600,
+    "variant": "B.stdlib",
+    "encode_ms": 7271.568499971181,
+    "raw_bytes": 269226700
+  },
+  {
+    "n": 3600,
+    "variant": "B.orjson_np",
+    "encode_ms": 629.0754000656307,
+    "raw_bytes": 143547031
+  }
+]

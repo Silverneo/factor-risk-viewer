@@ -75,6 +75,31 @@ LOC of the canonical converters (in `backend/bench/pandas_bench.py`):
 - D: 5 lines (open_stream, read_all, flatten + reshape, meshgrid + DataFrame)
 - E: 6 lines (struct.unpack header, frombuffer, reshape, meshgrid + DataFrame)
 
+## Side experiment: would `orjson` help on the server?
+
+Asked after the main run: does swapping `json.dumps` for `orjson.dumps` ease the server-side encode pain on formats A and B? Yes — meaningfully for A, transformatively for B.
+
+| Variant | n=3600 encode | n=3600 raw bytes |
+|---------|--------------|------------------|
+| A.stdlib `json.dumps(list_of_dicts)` | 13,344 ms | 637 MB |
+| A.orjson `orjson.dumps(list_of_dicts)` | **4,094 ms** | **559 MB** |
+| B.stdlib `json.dumps({matrix: arr.tolist()})` | 7,272 ms | 269 MB |
+| B.orjson_np `orjson.dumps({matrix: arr}, OPT_SERIALIZE_NUMPY)` | **629 ms** | **144 MB** |
+| D Arrow IPC (reference) | 16 ms | 52 MB |
+
+Why orjson shrinks the wire:
+- `json.dumps` uses Python's `repr(float)` — up to 17 digits per number.
+- `orjson.dumps` uses the shortest round-trip representation — typically 8-12 digits for float32 inputs.
+
+Why orjson_np transforms format B:
+- Without `OPT_SERIALIZE_NUMPY`, `matrix.tolist()` allocates 12.96M Python floats (slow + GC pressure) before serialization even starts.
+- With it, orjson writes the numpy buffer directly to JSON text — no Python-object intermediate.
+
+Caveats:
+- **orjson does not rescue format A from the V8 string-length ceiling.** A.orjson at n=3600 is still 559 MB > 512 MB → still hard-fails in Chrome's `JSON.parse` path.
+- The decode side (browser, pandas) is unchanged — orjson only addresses server encode. JSON.parse latency is still on the order of a second per 1M cells (and unbounded above ~512 MB).
+- orjson is a small Rust extension; 1 dep, ~1 MB wheel. No ergonomic cost.
+
 ## Findings
 
 1. **List-of-dict has a hard ceiling at ~512 MB of UTF-8 source in any V8-based browser.** Format A failed at n=3600 with `SyntaxError: Unexpected end of JSON input`. The actual root cause: V8's `String::kMaxLength` is `0x1FFFFFE8 = 536,870,888` characters (~512 MB). Our payload is 637 MB. Node's `TextDecoder` throws explicitly (`Cannot create a string longer than 0x1fffffe8 characters`); Chrome's silently truncates and `JSON.parse` then reports the truncated JSON as malformed. Verified independently: the bytes leaving the server are valid JSON (Python `json.loads` parses all 12,960,000 cells), the browser receives all 637 MB (`buf.byteLength` matches), V8 just cannot represent that buffer as a single JS string. There is no JS-side workaround using `JSON.parse` — `await new Response(buf).json()` would build the same intermediate string. Streaming JSON parsers (oboe/clarinet/JSONStream) bypass it but are slower per token and have no native option. **For any endpoint that might one day produce >512 MB of JSON-text response, list-of-dict is not just suboptimal — it cannot work in the browser.**
@@ -107,3 +132,5 @@ LOC of the canonical converters (in `backend/bench/pandas_bench.py`):
 **For any future endpoint that might return more than ~1M cells:** do not use list-of-dict JSON. The 637 MB / 12-second encode + browser-side hard-fail is not a "slow case" — it's a future incident waiting to be reproduced. Use Arrow IPC (format D). It wins on encode time (775×), wire size after gzip (3.5×), decode time (>2000×), pandas conversion (~5×), and unlocks streaming + Transferable for free. The trade-offs are a ~few-hundred-KB bundle delta and a one-time cost of dropping `apache-arrow` into the build.
 
 **On the user's general instinct:** "list-of-dict + gzip middleware so it converts to a DataFrame easily" is fine for endpoints that return a few thousand rows and below. It does not scale. The pandas convenience is also illusory at scale — `pd.DataFrame(list_of_dicts)` is itself one of the slowest ways to construct a DataFrame; `pd.DataFrame({col: array})` from a binary format is faster *and* shorter. The instinct is right for prototyping, wrong for anything that may grow.
+
+**On `orjson`:** if you must stay JSON-shaped (debuggability, no extra frontend dep, established contract), reach for `orjson` with `OPT_SERIALIZE_NUMPY` over stdlib `json` — it's a one-line drop-in, halves the wire size for numeric responses, and is 10-12× faster on numpy-backed payloads. It is *not* a substitute for going binary at the largest sizes (it cannot save format A from the V8 string ceiling, and Arrow IPC is still 39× faster), but it makes the JSON-shaped path viable at sizes where the stdlib path was already painful.

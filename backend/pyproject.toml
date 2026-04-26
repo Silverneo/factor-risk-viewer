@@ -14,5 +14,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "orjson>=3.11.8",
     "pytest>=8.0",
 ]
