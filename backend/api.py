@@ -462,6 +462,28 @@ def get_covariance_subset(
     )
 
 
+# ---------- Bench endpoint (gated) -------------------------------------------
+# Serves synthetic covariance payloads in 4 formats for the frontend bench
+# harness. Gated by env var FACTOR_RISK_BENCH=1 because the app has no auth.
+
+import os as _os
+
+if _os.environ.get("FACTOR_RISK_BENCH") == "1":
+    from bench import formats as _bench_formats  # type: ignore
+    from bench.server_bench import synth as _bench_synth  # type: ignore
+
+    @app.get("/api/_bench/covariance")
+    def _bench_covariance(format: str, n: int) -> Response:
+        if format not in _bench_formats.REGISTRY:
+            raise HTTPException(400, f"unknown format {format!r}")
+        if n not in (200, 1000, 3600):
+            raise HTTPException(400, f"n must be one of 200/1000/3600, got {n}")
+        ids, matrix = _bench_synth(n)
+        spec = _bench_formats.REGISTRY[format]
+        payload, content_type = spec.encode(ids, matrix)
+        return Response(content=payload, media_type=content_type)
+
+
 # ---------- Generic query API -----------------------------------------------
 # Read-only SQL endpoint for analyst / agent / LLM consumers.
 # Connection is opened read-only at startup, so writes can't happen — but we
