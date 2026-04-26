@@ -1,9 +1,10 @@
 # Covariance Payload Formats — Results
 
 Date: 2026-04-26
-Spec: [`docs/superpowers/specs/2026-04-26-covariance-payload-formats-experiment-design.md`](../superpowers/specs/2026-04-26-covariance-payload-formats-experiment-design.md)
-Plan: [`docs/superpowers/plans/2026-04-26-covariance-payload-formats-experiment.md`](../superpowers/plans/2026-04-26-covariance-payload-formats-experiment.md)
-Raw data: [`backend/bench/results/`](../../backend/bench/results/)
+Spec: [`spec.md`](spec.md)
+Plan: [`plan.md`](plan.md)
+Raw data: [`results/`](results/)
+Code: [`backend/bench/`](../../backend/bench/) — formats, encoders, drivers; kept under `backend/` because the gated `/api/_bench/covariance` endpoint imports it.
 
 ## Setup
 

@@ -20,7 +20,12 @@ import orjson
 
 from bench.server_bench import synth, SIZES, TRIALS
 
-RESULTS_DIR = Path(__file__).parent / "results"
+RESULTS_DIR = (
+    Path(__file__).parents[2]
+    / "experiments"
+    / "2026-04-26-covariance-payload-formats"
+    / "results"
+)
 
 
 def encode_a_stdlib(ids, matrix):

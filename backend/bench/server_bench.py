@@ -21,7 +21,12 @@ from bench import formats
 
 SIZES = [200, 1000, 3600]
 TRIALS = 3
-RESULTS_DIR = Path(__file__).parent / "results"
+RESULTS_DIR = (
+    Path(__file__).parents[2]
+    / "experiments"
+    / "2026-04-26-covariance-payload-formats"
+    / "results"
+)
 
 
 def synth(n: int) -> tuple[list[str], np.ndarray]:

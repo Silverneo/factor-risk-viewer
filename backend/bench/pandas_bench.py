@@ -22,7 +22,12 @@ import pyarrow.ipc as ipc
 from bench import formats
 from bench.server_bench import synth, SIZES, TRIALS
 
-RESULTS_DIR = Path(__file__).parent / "results"
+RESULTS_DIR = (
+    Path(__file__).parents[2]
+    / "experiments"
+    / "2026-04-26-covariance-payload-formats"
+    / "results"
+)
 
 
 def to_long_df(ids: list[str], matrix: np.ndarray) -> pd.DataFrame:
