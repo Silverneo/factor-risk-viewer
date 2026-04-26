@@ -44,11 +44,29 @@ def _decode_a(payload: bytes) -> tuple[list[str], np.ndarray]:
     return ids, matrix
 
 
+# ---------- Format B: 2D nested array JSON -----------------------------------
+
+def _encode_b(ids: list[str], matrix: np.ndarray) -> tuple[bytes, str]:
+    body = {"factor_ids": ids, "matrix": matrix.tolist()}
+    return json.dumps(body).encode("utf-8"), "application/json"
+
+
+def _decode_b(payload: bytes) -> tuple[list[str], np.ndarray]:
+    body = json.loads(payload)
+    return body["factor_ids"], np.asarray(body["matrix"], dtype=np.float32)
+
+
 REGISTRY: dict[str, FormatSpec] = {
     "A": FormatSpec(
         name="list-of-dict JSON",
         description="Row-shaped JSON: [{i, j, v}, ...]",
         encode=_encode_a,
         decode=_decode_a,
+    ),
+    "B": FormatSpec(
+        name="2D nested array JSON",
+        description="{factor_ids, matrix: [[...]]}",
+        encode=_encode_b,
+        decode=_decode_b,
     ),
 }
