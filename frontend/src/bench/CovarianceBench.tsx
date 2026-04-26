@@ -1,5 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { tableFromIPC } from 'apache-arrow'
+import { AgGridReact } from 'ag-grid-react'
+import { ModuleRegistry, AllCommunityModule, themeBalham } from 'ag-grid-community'
+
+ModuleRegistry.registerModules([AllCommunityModule])
 
 const API = import.meta.env.VITE_API ?? 'http://localhost:8000'
 const FORMATS = ['A', 'B', 'D', 'E'] as const
@@ -63,9 +67,50 @@ const DECODERS: Record<string, (buf: ArrayBuffer) => Decoded> = {
   A: decodeA, B: decodeB, D: decodeD, E: decodeE,
 }
 
+async function measureScrollFps(api: NonNullable<AgGridReact['api']>, n: number): Promise<number> {
+  let frames = 0
+  let stop = false
+  const tick = () => {
+    if (stop) return
+    frames++
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+  const start = performance.now()
+  for (let c = 0; c < n; c += 10) {
+    api.ensureColumnVisible(`c${c}`)
+    await new Promise(r => setTimeout(r, 16))
+    if (performance.now() - start > 4000) break
+  }
+  stop = true
+  const elapsedSec = (performance.now() - start) / 1000
+  return frames / elapsedSec
+}
+
 export function CovarianceBench() {
   const [running, setRunning] = useState(false)
   const [rows, setRows] = useState<Row[]>([])
+  const [fpsResults, setFpsResults] = useState<{ format: string; fps: number }[]>([])
+  const [activeMatrix, setActiveMatrix] = useState<Decoded | null>(null)
+  const gridRef = useRef<AgGridReact>(null)
+
+  async function runFpsTest() {
+    setFpsResults([])
+    const out: { format: string; fps: number }[] = []
+    for (const fmt of ['B', 'D'] as const) {
+      const buf = await fetch(`${API}/api/_bench/covariance?format=${fmt}&n=3600`).then(r => r.arrayBuffer())
+      const decoded = DECODERS[fmt](buf)
+      setActiveMatrix(decoded)
+      // wait for AG Grid to mount + settle
+      await new Promise(r => requestAnimationFrame(r))
+      await new Promise(r => setTimeout(r, 300))
+      const api = gridRef.current?.api
+      if (!api) continue
+      const fps = await measureScrollFps(api, decoded.n)
+      out.push({ format: fmt, fps })
+      setFpsResults([...out])
+    }
+  }
 
   async function run() {
     setRunning(true)
@@ -146,6 +191,44 @@ export function CovarianceBench() {
           ))}
         </tbody>
       </table>
+
+      <h3 style={{ marginTop: 24 }}>AG Grid scroll FPS (n=3600)</h3>
+      <button onClick={runFpsTest}>Run FPS test</button>
+      <table style={{ marginTop: 8, borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #ccc' }}>format</th>
+            <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #ccc' }}>FPS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {fpsResults.map(r => (
+            <tr key={r.format}>
+              <td style={{ padding: '2px 8px' }}>{r.format}</td>
+              <td style={{ padding: '2px 8px' }}>{r.fps.toFixed(1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {activeMatrix && (
+        <div style={{ height: 400, width: '100%', marginTop: 12 }}>
+          <AgGridReact
+            ref={gridRef}
+            theme={themeBalham}
+            rowData={Array.from({ length: activeMatrix.n }, (_, i) => ({ __row: i }))}
+            columnDefs={Array.from({ length: activeMatrix.n }, (_, j) => ({
+              colId: `c${j}`,
+              headerName: String(j),
+              width: 64,
+              valueGetter: (p: { data: { __row: number } }) => {
+                const m = activeMatrix
+                const i = p.data.__row
+                return m.matrix[i * m.n + j]
+              },
+            }))}
+          />
+        </div>
+      )}
     </div>
   )
 }
