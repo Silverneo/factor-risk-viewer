@@ -1516,3 +1516,313 @@ body {
   .cov-toolbar, .ts-toolbar, .cov-info { padding-left: 24px; padding-right: 24px; }
   .statusbar { padding: 0 24px; }
 }
+
+/* ========== experimental Charts view ===================================== */
+/* Dark canvas matching the time-series view. The view splits into a top
+   toolbar (portfolio + metric), a sub-tab strip (chart variant), and a
+   canvas pane that fills the rest.                                          */
+
+.charts-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #0B0F1A;
+  color: #cbd5e1;
+}
+
+.charts-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 6px 16px;
+  min-height: 44px;
+  background: #1e293b;
+  border-bottom: 1px solid #334155;
+  flex-shrink: 0;
+}
+.charts-tools-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.charts-tools-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  gap: 12px;
+  justify-content: flex-end;
+}
+.charts-select {
+  font-family: inherit;
+  font-size: 12px;
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  padding: 4px 8px;
+  outline: none;
+  min-width: 200px;
+  max-width: 360px;
+}
+.charts-select:hover { border-color: #475569; }
+.charts-select:focus { border-color: #2563eb; }
+
+.charts-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+.charts-subtab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 8px 14px 6px;
+  font: inherit;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+}
+.charts-subtab:hover { color: #e2e8f0; background: #1e293b; }
+.charts-subtab.active {
+  color: #f8fafc;
+  border-bottom-color: #f59e0b;
+  background: #0B0F1A;
+}
+.charts-subtab-label { font-weight: 600; letter-spacing: 0.02em; }
+.charts-subtab-hint {
+  font-size: 10px;
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.charts-subtab.active .charts-subtab-hint { color: #94a3b8; }
+
+.charts-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.charts-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.charts-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.chart-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chart-subbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  gap: 12px;
+  padding: 6px 16px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+  min-height: 36px;
+}
+.chart-subbar .bc-label {
+  color: #64748b;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.chart-subbar .bc-meta {
+  color: #94a3b8;
+  font-size: 11px;
+  margin-left: 4px;
+}
+.chart-subbar .bc-cur {
+  color: #f8fafc;
+  font-weight: 600;
+  padding: 2px 6px;
+  background: #1e293b;
+  border-radius: 2px;
+  font-size: 12px;
+}
+.chart-subbar .bc-link {
+  background: none;
+  border: none;
+  color: #93c5fd;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 2px;
+  font: inherit;
+  font-size: 12px;
+}
+.chart-subbar .bc-link:hover { background: #1e293b; color: #dbeafe; }
+.chart-subbar .bc-sep { color: #475569; margin: 0 2px; }
+
+.chart-bc {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.chart-subbar-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  gap: 10px;
+}
+
+.chart-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #0B0F1A;
+  overflow: hidden;
+}
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* SVG chart node defaults — keeping interactions consistent across all
+   the hand-rolled hierarchical charts.                                      */
+.tm-node, .ic-node, .sb-node {
+  cursor: default;
+}
+.tm-node.drillable, .ic-node.drillable, .sb-node.drillable {
+  cursor: pointer;
+}
+.tm-node.drillable:hover rect,
+.ic-node.drillable:hover rect,
+.sb-node.drillable:hover path {
+  filter: brightness(1.2);
+}
+.sb-center {
+  cursor: pointer;
+  transition: fill 0.15s;
+}
+.sb-center:hover { fill: #334155; }
+
+/* Floating chart tooltip (hand-rolled — AG Charts has its own tooltips
+   for the AG-driven charts).                                                */
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 8px 10px;
+  color: #f8fafc;
+  font-size: 11px;
+  min-width: 160px;
+  max-width: 320px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+}
+.ctt-name {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.ctt-meta {
+  font-size: 10px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+.ctt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ctt-row span { color: #94a3b8; }
+.ctt-row b { color: #f8fafc; font-weight: 600; }
+
+/* Factor-type colour legend — appears in the chart subbar of hand-rolled
+   hierarchical charts, since they don't get an AG Charts legend for free.  */
+.ftl {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+.ftl-item { display: inline-flex; align-items: center; gap: 4px; }
+.ftl-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.ftl-label {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+/* Period and orient toggles — same pattern as TimeSeriesView's chart-mode,
+   re-styled for clarity.                                                    */
+.period-toggle, .orient-toggle {
+  display: inline-flex;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.period-toggle button, .orient-toggle button {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.period-toggle button + button,
+.orient-toggle button + button { border-left: 1px solid #334155; }
+.period-toggle button:hover,
+.orient-toggle button:hover { color: #e2e8f0; background: #0f172a; }
+.period-toggle button.active,
+.orient-toggle button.active {
+  background: #2563eb;
+  color: #ffffff;
+}

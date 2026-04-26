@@ -17,6 +17,7 @@ import { AgCharts } from 'ag-charts-react'
 import { ModuleRegistry as ChartsModuleRegistry, AllCommunityModule as AllChartsModule } from 'ag-charts-community'
 import type { AgChartOptions } from 'ag-charts-community'
 import { CovarianceBench } from './bench/CovarianceBench'
+import { ChartsView } from './charts/ChartsView'
 
 ChartsModuleRegistry.registerModules([AllChartsModule])
 
@@ -65,7 +66,7 @@ interface CellEntry { v: number; prev?: number }
 type Metric = 'ctr_pct' | 'ctr_vol' | 'exposure' | 'mctr'
 type Layout = 'pf-rows' | 'fc-rows'
 type ViewMode = 'values' | 'delta' | 'both'
-type AppView = 'risk' | 'covariance' | 'timeseries' | 'bench'
+type AppView = 'risk' | 'covariance' | 'timeseries' | 'charts' | 'bench'
 type CovType = 'cov' | 'corr'
 type ChartMode = 'area' | 'lines' | 'bar-cat' | 'bar-monthly'
 
@@ -1276,7 +1277,6 @@ function TimeSeriesView({ portfolios, beginFetch, endFetch }: TimeSeriesViewProp
       'bar'
     const stacked = chartMode === 'area' || stackType === 'bar'
     const fontMono = '"JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace'
-    const fontUI = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
     const labelColor = '#7A8294'
     const gridColor = '#1B2233'
     const totalColor = '#E6E8EE'
@@ -2079,7 +2079,13 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-left">
           <span className="brand">RISK</span>
-          <span className="title">{appView === 'risk' ? 'Factor Risk Contribution' : 'Factor Covariance'}</span>
+          <span className="title">{
+            appView === 'risk' ? 'Factor Risk Contribution' :
+            appView === 'covariance' ? 'Factor Covariance' :
+            appView === 'timeseries' ? 'Time Series' :
+            appView === 'charts' ? 'Risk Charts' :
+            appView === 'bench' ? 'Bench' : ''
+          }</span>
           <div className="view-switcher" role="tablist" aria-label="View">
             <button
               role="tab"
@@ -2101,12 +2107,18 @@ export default function App() {
             >Time Series</button>
             <button
               role="tab"
+              aria-selected={appView === 'charts'}
+              className={appView === 'charts' ? 'active' : ''}
+              onClick={() => setAppView('charts')}
+            >Charts</button>
+            <button
+              role="tab"
               aria-selected={appView === 'bench'}
               className={appView === 'bench' ? 'active' : ''}
               onClick={() => setAppView('bench')}
             >Bench</button>
           </div>
-          {(appView === 'risk' || appView === 'covariance') && <div className="date-picker">
+          {(appView === 'risk' || appView === 'covariance' || appView === 'charts') && <div className="date-picker">
             <span className="dp-label">AS OF</span>
             {appView === 'covariance' ? (
               <select
@@ -2129,15 +2141,19 @@ export default function App() {
                 >
                   {availableDates.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
-                <span className="dp-vs">vs</span>
-                <select
-                  value={compareToDate ?? ''}
-                  onChange={(e) => setCompareToDate(e.target.value || null)}
-                  disabled={!availableDates.length}
-                >
-                  <option value="">no compare</option>
-                  {availableDates.filter(d => d !== asOfDate).map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
+                {appView === 'risk' && (
+                  <>
+                    <span className="dp-vs">vs</span>
+                    <select
+                      value={compareToDate ?? ''}
+                      onChange={(e) => setCompareToDate(e.target.value || null)}
+                      disabled={!availableDates.length}
+                    >
+                      <option value="">no compare</option>
+                      {availableDates.filter(d => d !== asOfDate).map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </>
+                )}
               </>
             )}
           </div>}
@@ -2318,6 +2334,19 @@ export default function App() {
       {appView === 'timeseries' && (
         <TimeSeriesView
           portfolios={portfolios}
+          beginFetch={beginFetch}
+          endFetch={endFetch}
+        />
+      )}
+      {appView === 'charts' && (
+        <ChartsView
+          portfolios={portfolios}
+          factors={effectiveFactors}
+          factorById={factorById}
+          factorChildren={factorChildren}
+          availableDates={availableDates}
+          asOfDate={asOfDate}
+          compareToDate={compareToDate}
           beginFetch={beginFetch}
           endFetch={endFetch}
         />

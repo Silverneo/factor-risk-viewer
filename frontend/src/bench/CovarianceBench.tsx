@@ -120,7 +120,7 @@ export function CovarianceBench() {
       colId: `c${j}`,
       headerName: String(j),
       width: 64,
-      valueGetter: (p: { data: { __row: number } }) => m.matrix[p.data.__row * m.n + j],
+      valueGetter: (p: { data?: { __row: number } }) => p.data ? m.matrix[p.data.__row * m.n + j] : null,
     }))
   }, [activeMatrix])
 
