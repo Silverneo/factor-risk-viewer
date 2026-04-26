@@ -1,0 +1,87 @@
+[
+  {
+    "n": 200,
+    "format": "A",
+    "decodeMs": 5.299999952316284,
+    "heapDeltaMb": 0,
+    "payloadBytes": 1865255
+  },
+  {
+    "n": 200,
+    "format": "B",
+    "decodeMs": 1.399999976158142,
+    "heapDeltaMb": 13.239774,
+    "payloadBytes": 829656
+  },
+  {
+    "n": 200,
+    "format": "D",
+    "decodeMs": 0.20000004768371582,
+    "heapDeltaMb": 0,
+    "payloadBytes": 163024
+  },
+  {
+    "n": 200,
+    "format": "E",
+    "decodeMs": 0,
+    "heapDeltaMb": 0,
+    "payloadBytes": 161714
+  },
+  {
+    "n": 1000,
+    "format": "A",
+    "decodeMs": 178.80000007152557,
+    "heapDeltaMb": 50.469212,
+    "payloadBytes": 47546801
+  },
+  {
+    "n": 1000,
+    "format": "B",
+    "decodeMs": 40.89999997615814,
+    "heapDeltaMb": 29.067838,
+    "payloadBytes": 20768802
+  },
+  {
+    "n": 1000,
+    "format": "D",
+    "decodeMs": 0.20000004768371582,
+    "heapDeltaMb": 0,
+    "payloadBytes": 4013424
+  },
+  {
+    "n": 1000,
+    "format": "E",
+    "decodeMs": 0.8999999761581421,
+    "heapDeltaMb": 0,
+    "payloadBytes": 4008914
+  },
+  {
+    "n": 3600,
+    "format": "A",
+    "decodeMs": null,
+    "heapDeltaMb": null,
+    "payloadBytes": 637067499,
+    "note": "SyntaxError: Unexpected end of JSON input"
+  },
+  {
+    "n": 3600,
+    "format": "B",
+    "decodeMs": 902.1000000238419,
+    "heapDeltaMb": -160.379862,
+    "payloadBytes": 269226700
+  },
+  {
+    "n": 3600,
+    "format": "D",
+    "decodeMs": 0.40000009536743164,
+    "heapDeltaMb": 0,
+    "payloadBytes": 51889824
+  },
+  {
+    "n": 3600,
+    "format": "E",
+    "decodeMs": 9.899999976158142,
+    "heapDeltaMb": 0,
+    "payloadBytes": 51874914
+  }
+]

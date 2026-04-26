@@ -1,0 +1,86 @@
+[
+  {
+    "n": 200,
+    "format": "A",
+    "encode_ms": 40.26089992839843,
+    "raw_bytes": 1865255,
+    "gzip_bytes": 509501
+  },
+  {
+    "n": 200,
+    "format": "B",
+    "encode_ms": 12.639500084333122,
+    "raw_bytes": 829656,
+    "gzip_bytes": 358251
+  },
+  {
+    "n": 200,
+    "format": "D",
+    "encode_ms": 0.14530005864799023,
+    "raw_bytes": 163024,
+    "gzip_bytes": 141298
+  },
+  {
+    "n": 200,
+    "format": "E",
+    "encode_ms": 0.02010003663599491,
+    "raw_bytes": 161714,
+    "gzip_bytes": 140559
+  },
+  {
+    "n": 1000,
+    "format": "A",
+    "encode_ms": 938.8132999883965,
+    "raw_bytes": 47546801,
+    "gzip_bytes": 12839735
+  },
+  {
+    "n": 1000,
+    "format": "B",
+    "encode_ms": 310.80009997822344,
+    "raw_bytes": 20768802,
+    "gzip_bytes": 9108968
+  },
+  {
+    "n": 1000,
+    "format": "D",
+    "encode_ms": 1.3964000390842557,
+    "raw_bytes": 4013424,
+    "gzip_bytes": 3702465
+  },
+  {
+    "n": 1000,
+    "format": "E",
+    "encode_ms": 1.2882999144494534,
+    "raw_bytes": 4008914,
+    "gzip_bytes": 3700195
+  },
+  {
+    "n": 3600,
+    "format": "A",
+    "encode_ms": 12408.793100039475,
+    "raw_bytes": 637067499,
+    "gzip_bytes": 167632184
+  },
+  {
+    "n": 3600,
+    "format": "B",
+    "encode_ms": 4048.6876000650227,
+    "raw_bytes": 269226700,
+    "gzip_bytes": 118152604
+  },
+  {
+    "n": 3600,
+    "format": "D",
+    "encode_ms": 16.197099932469428,
+    "raw_bytes": 51889824,
+    "gzip_bytes": 47985664
+  },
+  {
+    "n": 3600,
+    "format": "E",
+    "encode_ms": 16.078699962235987,
+    "raw_bytes": 51874914,
+    "gzip_bytes": 47979375
+  }
+]

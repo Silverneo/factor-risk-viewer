@@ -1861,10 +1861,12 @@ export default function App() {
   }, [factorsAreRows, effectiveFactors, portfolios])
 
   if (!portfolios.length || !factors.length) {
+    if (appView === 'bench') return <CovarianceBench />
     return (
       <div className="loading">
         <span className="spinner" />
-        <span>Loading snapshot…</span>
+        <span>Loading snapshot… </span>
+        <button onClick={() => setAppView('bench')} style={{ marginLeft: 12 }}>Skip to Bench</button>
       </div>
     )
   }

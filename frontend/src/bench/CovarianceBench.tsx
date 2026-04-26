@@ -12,9 +12,10 @@ const SIZES = [200, 1000, 3600] as const
 type Row = {
   n: number
   format: string
-  decodeMs: number
+  decodeMs: number | null
   heapDeltaMb: number | null
   payloadBytes: number
+  note?: string
 }
 
 type Decoded = { ids: string[]; matrix: Float32Array; n: number }
@@ -60,7 +61,10 @@ function decodeE(buf: ArrayBuffer): Decoded {
   const ids: string[] = sidecar.factor_ids
   const n = view.getUint32(4 + sidecarLen, true)
   const bodyOffset = 4 + sidecarLen + 4
-  return { ids, matrix: new Float32Array(buf, bodyOffset, n * n), n }
+  // bodyOffset is not necessarily 4-byte aligned (sidecar JSON length varies).
+  // Float32Array requires 4-byte alignment when constructed as a view, so copy.
+  const bytes = n * n * 4
+  return { ids, matrix: new Float32Array(buf.slice(bodyOffset, bodyOffset + bytes)), n }
 }
 
 const DECODERS: Record<string, (buf: ArrayBuffer) => Decoded> = {
@@ -119,35 +123,40 @@ export function CovarianceBench() {
     for (const n of SIZES) {
       for (const fmt of FORMATS) {
         const url = `${API}/api/_bench/covariance?format=${fmt}&n=${n}`
-        const buf = await fetch(url).then(r => r.arrayBuffer())
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const heapBefore = (performance as any).memory?.usedJSHeapSize ?? null
-        // Median of 3 decode trials. Trials re-decode from the same buffer.
-        const samples: number[] = []
-        let decoded: Decoded | null = null
-        for (let trial = 0; trial < 3; trial++) {
-          const t0 = performance.now()
-          decoded = DECODERS[fmt](buf)
-          samples.push(performance.now() - t0)
+        let payloadBytes = 0
+        try {
+          const buf = await fetch(url).then(r => r.arrayBuffer())
+          payloadBytes = buf.byteLength
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const heapBefore = (performance as any).memory?.usedJSHeapSize ?? null
+          const samples: number[] = []
+          let decoded: Decoded | null = null
+          for (let trial = 0; trial < 3; trial++) {
+            const t0 = performance.now()
+            decoded = DECODERS[fmt](buf)
+            samples.push(performance.now() - t0)
+          }
+          samples.sort((a, b) => a - b)
+          const decodeMs = samples[1]
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ;(window as any).__lastDecoded = decoded
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const heapAfter = (performance as any).memory?.usedJSHeapSize ?? null
+          const heapDeltaMb =
+            heapBefore != null && heapAfter != null
+              ? (heapAfter - heapBefore) / 1e6
+              : null
+          collected.push({ n, format: fmt, decodeMs, heapDeltaMb, payloadBytes })
+        } catch (err) {
+          collected.push({
+            n,
+            format: fmt,
+            decodeMs: null,
+            heapDeltaMb: null,
+            payloadBytes,
+            note: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          })
         }
-        samples.sort((a, b) => a - b)
-        const decodeMs = samples[1]
-        // Keep last decoded reachable so heap measurement reflects decoded form.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(window as any).__lastDecoded = decoded
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const heapAfter = (performance as any).memory?.usedJSHeapSize ?? null
-        const heapDeltaMb =
-          heapBefore != null && heapAfter != null
-            ? (heapAfter - heapBefore) / 1e6
-            : null
-        collected.push({
-          n,
-          format: fmt,
-          decodeMs,
-          heapDeltaMb,
-          payloadBytes: buf.byteLength,
-        })
         setRows([...collected])
       }
     }
@@ -184,7 +193,9 @@ export function CovarianceBench() {
             <tr key={idx}>
               <td style={{ padding: '2px 8px' }}>{r.n}</td>
               <td style={{ padding: '2px 8px' }}>{r.format}</td>
-              <td style={{ padding: '2px 8px' }}>{r.decodeMs.toFixed(1)}</td>
+              <td style={{ padding: '2px 8px', color: r.decodeMs == null ? 'crimson' : undefined }}>
+                {r.decodeMs?.toFixed(1) ?? (r.note ?? 'failed')}
+              </td>
               <td style={{ padding: '2px 8px' }}>{r.heapDeltaMb?.toFixed(2) ?? '—'}</td>
               <td style={{ padding: '2px 8px' }}>{r.payloadBytes.toLocaleString()}</td>
             </tr>
