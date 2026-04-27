@@ -15,6 +15,7 @@ import { Heatmap } from './Heatmap'
 import { TopFactors } from './TopFactors'
 import { StackedArea } from './StackedArea'
 import { RiskDiff } from './RiskDiff'
+import { RiskOverTime } from './RiskOverTime'
 
 export type ChartTab =
   | 'treemap'
@@ -24,6 +25,7 @@ export type ChartTab =
   | 'bars'
   | 'stacked'
   | 'diff'
+  | 'rot'
 
 interface ChartTabSpec {
   id: ChartTab
@@ -39,6 +41,7 @@ const CHART_TABS: ChartTabSpec[] = [
   { id: 'bars',     label: 'Top factors', hint: 'Largest contributors' },
   { id: 'stacked',  label: 'Stacked',     hint: 'Type over time' },
   { id: 'diff',     label: 'Date diff',   hint: 'Period change' },
+  { id: 'rot',      label: 'Risk / time', hint: 'On-the-fly weekly σ' },
 ]
 
 const DEFAULT_TAB: ChartTab = 'treemap'
@@ -185,6 +188,9 @@ export function ChartsView(props: ChartsViewProps) {
             </PaneSlot>
             <PaneSlot active={tab === 'diff'}>
               <RiskDiff {...childProps} />
+            </PaneSlot>
+            <PaneSlot active={tab === 'rot'}>
+              <RiskOverTime />
             </PaneSlot>
           </>
         )}

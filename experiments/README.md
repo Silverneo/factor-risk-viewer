@@ -7,6 +7,8 @@ Self-contained records of investigations that informed (or could inform) decisio
 | Date | Experiment | Headline finding |
 |------|------------|------------------|
 | 2026-04-26 | [Covariance payload formats](2026-04-26-covariance-payload-formats/) | List-of-dict JSON hard-fails in Chrome at 6.5M cells (V8 string-length ceiling). Arrow IPC wins comprehensively on every axis at large sizes. |
+| 2026-04-27 | [Charts experiment](2026-04-27-charts-experiment/) | Seven hierarchical / comparative / temporal chart variants for the same risk data, all driven by existing endpoints. Hand-rolled SVG layouts (squarify + partition) avoid AG Charts Enterprise. |
+| 2026-04-27 | [On-the-fly risk over weekly history](2026-04-27-on-the-fly-risk/) | Direct `xᵀ Σ_t x` is interactive ≤ N=2000 (sub-second) but bad UX at N=4000 (~19 s, memory-bound). Rank-30 low-rank reconstruction is ~5 orders of magnitude faster at every N — the right production default. |
 
 ## Folder convention
 

@@ -1808,6 +1808,85 @@ body {
   font-weight: 500;
 }
 
+/* Risk-over-time exposure editor + summary strip. */
+.rot-overrides {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+.rot-overrides-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.rot-overrides-label span:first-child {
+  font-weight: 600;
+  color: #cbd5e1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.rot-overrides-label .rot-hint code {
+  background: #1e293b;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 10px;
+  color: #cbd5e1;
+}
+.rot-overrides-input {
+  grid-column: 1;
+  grid-row: 2;
+  width: 100%;
+  min-height: 80px;
+  background: #0B0F1A;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+.rot-overrides-input:focus { border-color: #2563eb; outline: none; }
+.rot-summary {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  align-content: center;
+}
+.rot-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #0B0F1A;
+  border: 1px solid #1e293b;
+  border-radius: 3px;
+  padding: 8px 12px;
+}
+.rot-summary span {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #64748b;
+  font-weight: 600;
+}
+.rot-summary b {
+  font-size: 14px;
+  color: #f8fafc;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Period and orient toggles — same pattern as TimeSeriesView's chart-mode,
    re-styled for clarity.                                                    */
 .period-toggle, .orient-toggle {

@@ -51,6 +51,13 @@ build/
 *.parquet
 *.csv
 
+# Experiment raw outputs are the *opposite* of generated data — commit them.
+!experiments/**/results/*.csv
+!experiments/**/results/*.parquet
+
+# Weekly covariance artefacts — regenerated via `uv run python build_weekly_cov.py`.
+backend/weekly_cov_*.npz
+
 # ---------- Editors / IDEs ----------
 .vscode/
 .idea/

@@ -8,12 +8,14 @@ from __future__ import annotations
 import io
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 import duckdb
+import numpy as np
 import pyarrow as pa
 import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
@@ -78,11 +80,91 @@ class CellsResponse(BaseModel):
     cells: list[Cell]
 
 
+class WeeklyCovStore:
+    """Loads a synthetic weekly cov artefact built by build_weekly_cov.py.
+
+    Holds the (W, N, N) tensor mmap-backed so we don't blow the heap at
+    large N. Per request the relevant week-slice is materialised by
+    NumPy/BLAS — the OS pages in the bytes that are actually touched.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        # mmap_mode='r' avoids loading the whole tensor into RAM. The actual
+        # page-in happens lazily when einsum touches the bytes — at N=4000
+        # that's 6.6 GB of float32, but we only really hit it for one week
+        # at a time during the matvec.
+        npz = np.load(path, mmap_mode="r", allow_pickle=True)
+        self.cov_full: np.ndarray = npz["cov_full"]
+        self.factor_ids: np.ndarray = npz["factor_ids"]
+        self.week_dates: np.ndarray = npz["week_dates"]
+        meta = npz["meta"]
+        self.n = int(meta[0])
+        self.w = int(meta[1])
+        self.n_latent = int(meta[2])
+        self.factor_id_index: dict[str, int] = {
+            str(fid): i for i, fid in enumerate(self.factor_ids)
+        }
+        self.week_index: dict[str, int] = {
+            str(d): i for i, d in enumerate(self.week_dates)
+        }
+
+    def quadratic(
+        self,
+        exposures: np.ndarray,
+        start_idx: int = 0,
+        end_idx: int | None = None,
+    ) -> np.ndarray:
+        """σ²_t = xᵀ Σ_t x for a contiguous slice of weeks.
+
+        einsum 'i,wij,j->w' goes through BLAS GEMV under the hood (path
+        optimisation collapses the contraction). For very large N a manual
+        loop with explicit np.dot can be marginally faster but einsum has
+        the cleanest code for the bench.
+        """
+        end = end_idx if end_idx is not None else self.w
+        sub = self.cov_full[start_idx:end]
+        return np.einsum("i,wij,j->w", exposures, sub, exposures, optimize=True)
+
+
+def _find_weekly_cov_artefact() -> Path | None:
+    """Pick the largest weekly_cov artefact present in the backend dir.
+
+    Override with FRV_WEEKLY_COV pointing at a specific .npz path.
+    """
+    override = os.environ.get("FRV_WEEKLY_COV")
+    if override:
+        p = Path(override)
+        return p if p.exists() else None
+    here = Path(__file__).parent
+    candidates = sorted(here.glob("weekly_cov_*.npz"), key=lambda p: -p.stat().st_size)
+    return candidates[0] if candidates else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not DB_PATH.exists():
         raise RuntimeError(f"snapshot not found: {DB_PATH}. run build_snapshot.py first.")
     app.state.con = duckdb.connect(str(DB_PATH), read_only=True)
+
+    # Optional: weekly cov artefact for /api/risk/quadratic. Endpoint
+    # 503s if it's missing — the rest of the app still works.
+    artefact = _find_weekly_cov_artefact()
+    if artefact is not None:
+        try:
+            app.state.weekly_cov = WeeklyCovStore(artefact)
+            print(
+                f"[lifespan] loaded weekly cov: {artefact.name}  "
+                f"N={app.state.weekly_cov.n} W={app.state.weekly_cov.w}",
+                flush=True,
+            )
+        except Exception as e:  # noqa: BLE001 — log + continue without it
+            print(f"[lifespan] failed to load {artefact.name}: {e}", flush=True)
+            app.state.weekly_cov = None
+    else:
+        app.state.weekly_cov = None
+        print("[lifespan] no weekly cov artefact found; /api/risk/quadratic disabled", flush=True)
+
     yield
     app.state.con.close()
 
@@ -93,6 +175,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173", "http://127.0.0.1:5173",
         "http://localhost:5174", "http://127.0.0.1:5174",
+        "http://localhost:5175", "http://127.0.0.1:5175",
+        "http://localhost:5180", "http://127.0.0.1:5180",
     ],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -464,6 +548,127 @@ def get_covariance_subset(
         type=req.type,
         factor_ids=req.factor_ids,
         matrix=matrix,
+    )
+
+
+# ---------- On-the-fly systematic risk over weekly history ------------------
+# Quadratic form xᵀ Σ_t x evaluated across the loaded weekly covariance
+# tensor. Backed by a memory-mapped .npz produced by build_weekly_cov.py.
+
+class QuadraticRequest(BaseModel):
+    # Two ways to pass exposures:
+    # 1) Dense ordered vector matching the artefact's factor_id order.
+    #    Fastest: skips a per-factor validation pass.
+    # 2) Sparse map { factor_id -> exposure } when only a few factors are
+    #    nonzero. Missing factors default to zero. Slower at N=4000 because
+    #    Pydantic validates every entry in the dict, but ergonomic for the
+    #    client when only ~10 exposures are set.
+    # Provide exactly one. If both are provided, `exposures` wins.
+    exposures: list[float] | None = None
+    exposures_by_factor: dict[str, float] | None = None
+    start_week: str | None = None
+    end_week: str | None = None
+
+
+class QuadraticResponse(BaseModel):
+    n: int                       # factor universe size
+    w: int                       # number of weeks returned
+    weeks: list[str]             # ISO date strings, oldest → newest
+    systematic_var: list[float]  # σ²_t
+    systematic_vol: list[float]  # √σ²_t (clipped at 0 to avoid NaN on numerical noise)
+    elapsed_ms: float            # wall-clock for the BLAS step (excludes serialisation)
+    artefact: str                # which artefact served the request
+
+
+class QuadraticInfo(BaseModel):
+    n: int
+    w: int
+    n_latent: int
+    weeks: list[str]
+    factor_ids: list[str]
+    artefact: str
+    artefact_mb: float
+
+
+@app.get("/api/risk/quadratic/info", response_model=QuadraticInfo)
+def get_risk_quadratic_info():
+    store: WeeklyCovStore | None = getattr(app.state, "weekly_cov", None)
+    if store is None:
+        raise HTTPException(503, "weekly cov artefact not loaded; run build_weekly_cov.py")
+    return QuadraticInfo(
+        n=store.n,
+        w=store.w,
+        n_latent=store.n_latent,
+        weeks=[str(d) for d in store.week_dates],
+        factor_ids=[str(f) for f in store.factor_ids],
+        artefact=store.path.name,
+        artefact_mb=store.path.stat().st_size / (1024 * 1024),
+    )
+
+
+@app.post("/api/risk/quadratic", response_model=QuadraticResponse)
+def post_risk_quadratic(req: QuadraticRequest):
+    store: WeeklyCovStore | None = getattr(app.state, "weekly_cov", None)
+    if store is None:
+        raise HTTPException(503, "weekly cov artefact not loaded; run build_weekly_cov.py")
+
+    # Build the dense exposure vector.
+    if req.exposures is not None:
+        if len(req.exposures) != store.n:
+            raise HTTPException(
+                400,
+                f"exposures length {len(req.exposures)} != artefact N {store.n}; "
+                f"GET /api/risk/quadratic/info to see the artefact's factor_id order",
+            )
+        x = np.asarray(req.exposures, dtype=np.float32)
+    elif req.exposures_by_factor is not None:
+        x = np.zeros(store.n, dtype=np.float32)
+        unknown: list[str] = []
+        for fid, val in req.exposures_by_factor.items():
+            idx = store.factor_id_index.get(fid)
+            if idx is None:
+                unknown.append(fid)
+                continue
+            x[idx] = float(val)
+        if unknown and len(unknown) == len(req.exposures_by_factor):
+            raise HTTPException(
+                400,
+                f"none of the requested factor_ids exist in artefact ({store.path.name}); "
+                f"first few unknown: {unknown[:5]}",
+            )
+    else:
+        raise HTTPException(400, "must provide either `exposures` (ordered list) or `exposures_by_factor` (sparse map)")
+
+    # Resolve week range (inclusive, with newest = self.w - 1).
+    start_idx = 0
+    end_idx = store.w
+    if req.start_week is not None:
+        if req.start_week not in store.week_index:
+            raise HTTPException(400, f"unknown start_week: {req.start_week}")
+        start_idx = store.week_index[req.start_week]
+    if req.end_week is not None:
+        if req.end_week not in store.week_index:
+            raise HTTPException(400, f"unknown end_week: {req.end_week}")
+        end_idx = store.week_index[req.end_week] + 1
+    if end_idx <= start_idx:
+        raise HTTPException(400, "end_week must be on or after start_week")
+
+    t0 = time.perf_counter()
+    var = store.quadratic(x, start_idx=start_idx, end_idx=end_idx)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    # Numerical noise can drive very small variance values slightly negative
+    # in float32 — clip before sqrt.
+    var_clamped = np.clip(var, 0.0, None)
+    vol = np.sqrt(var_clamped)
+    return QuadraticResponse(
+        n=store.n,
+        w=int(end_idx - start_idx),
+        weeks=[str(d) for d in store.week_dates[start_idx:end_idx]],
+        systematic_var=var.astype(np.float64).tolist(),
+        systematic_vol=vol.astype(np.float64).tolist(),
+        elapsed_ms=elapsed_ms,
+        artefact=store.path.name,
     )
 
 

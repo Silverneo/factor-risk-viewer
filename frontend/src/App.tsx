@@ -29,7 +29,7 @@ interface CustomGroup { name: string; parent_id: string }
 
 ModuleRegistry.registerModules([AllCommunityModule, AllEnterpriseModule])
 
-const API = 'http://localhost:8000'
+const API = (import.meta as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL ?? 'http://localhost:8000'
 
 interface PortfolioNode {
   node_id: string
