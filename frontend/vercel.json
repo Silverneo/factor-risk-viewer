@@ -1,0 +1,6 @@
+{
+  "framework": "vite",
+  "buildCommand": "VITE_MOCK_MODE=true npm run build",
+  "outputDirectory": "dist",
+  "installCommand": "npm install"
+}

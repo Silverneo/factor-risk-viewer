@@ -18,6 +18,7 @@ import { ModuleRegistry as ChartsModuleRegistry, AllCommunityModule as AllCharts
 import type { AgChartOptions } from 'ag-charts-community'
 import { CovarianceBench } from './bench/CovarianceBench'
 import { ChartsView } from './charts/ChartsView'
+import { MOCK_MODE } from './mock'
 
 ChartsModuleRegistry.registerModules([AllChartsModule])
 
@@ -2079,6 +2080,9 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-left">
           <span className="brand">RISK</span>
+          {MOCK_MODE && (
+            <span className="brand-demo" title="Synthetic mock data — no real numbers">DEMO</span>
+          )}
           <span className="title">{
             appView === 'risk' ? 'Factor Risk Contribution' :
             appView === 'covariance' ? 'Factor Covariance' :
