@@ -210,6 +210,110 @@ const HANDLERS: Handler[] = [
     match: (u, m) => m === 'GET' && u.pathname === '/api/health',
     handle: async () => jsonResponse({ status: 'ok', risk_contribution_rows: 0, mock: true }),
   },
+  // ----- GET /api/risk/quadratic/info -----------------------------------
+  // Synthesise a small (N=200, W=104) artefact metadata so the Risk/Time
+  // tab feels real on the deployed showcase. The factor_ids overlap with
+  // what the user might see in the live snapshot's leaf factors so any
+  // pasted overrides have a reasonable chance of matching.
+  {
+    match: (u, m) => m === 'GET' && u.pathname === '/api/risk/quadratic/info',
+    handle: async () => {
+      const n = 200
+      const w = 104
+      const factor_ids = Array.from({ length: n }, (_, i) => `F${i.toString().padStart(5, '0')}`)
+      const end = new Date('2026-04-26')
+      const weeks: string[] = []
+      for (let i = w - 1; i >= 0; i--) {
+        const d = new Date(end.getTime() - i * 7 * 86_400_000)
+        weeks.push(d.toISOString().slice(0, 10))
+      }
+      return jsonResponse({
+        n,
+        w,
+        n_latent: 30,
+        eig_k: 100,
+        weeks,
+        factor_ids,
+        artefact: 'mock-weekly_cov_N200_W104.npz',
+        artefact_mb: 16.5,
+      })
+    },
+  },
+  // ----- POST /api/risk/quadratic ---------------------------------------
+  // σ_t synthesis. Picks a deterministic base level per week (so the
+  // chart has a smooth shape over time) then perturbs by a hash of the
+  // exposure vector. Both mode=full and mode=approx return the same
+  // numbers up to a small noise term so the "max rel err" tile shows
+  // realistic ~0.05% in Both mode.
+  {
+    match: (u, m) => m === 'POST' && u.pathname === '/api/risk/quadratic',
+    handle: async (_u, init) => {
+      interface Body {
+        exposures?: number[]
+        exposures_by_factor?: Record<string, number>
+        start_week?: string
+        end_week?: string
+        mode?: 'full' | 'approx'
+        k?: number
+      }
+      const body: Body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}')
+      const w = 104
+      const end = new Date('2026-04-26')
+      const weeks: string[] = []
+      for (let i = w - 1; i >= 0; i--) {
+        const d = new Date(end.getTime() - i * 7 * 86_400_000)
+        weeks.push(d.toISOString().slice(0, 10))
+      }
+      // Hash the exposure vector to a stable signature; same exposures →
+      // same line every time.
+      const sig = body.exposures
+        ? body.exposures.map((v, i) => `${i}:${v.toFixed(4)}`).join('|')
+        : JSON.stringify(body.exposures_by_factor ?? {})
+      const sigHash = hash32(sig)
+      // Magnitude scales with the L2 norm of the exposure so "All zero"
+      // gives ~0 and "All 1.0" gives a much bigger number.
+      let l2 = 0
+      if (body.exposures) for (const v of body.exposures) l2 += v * v
+      const baseScale = Math.sqrt(Math.max(l2, 0.01))
+      const isApprox = body.mode === 'approx'
+      const var_arr: number[] = []
+      const vol_arr: number[] = []
+      for (let t = 0; t < w; t++) {
+        // Smooth sine-ish wave plus per-week noise so the line has shape.
+        const wave = 1.0 + 0.15 * Math.sin((t / w) * Math.PI * 2.5)
+        const noise = (rand01(`mock-rot|${sigHash}|${t}`) - 0.5) * 0.05
+        const baseVar = (baseScale * (wave + noise)) ** 2
+        // Approx mode: tiny relative offset (~0.05%) so the comparison
+        // mode shows a realistic agreement.
+        const approxOffset = isApprox ? baseVar * 0.0005 * (rand01(`mock-rot-approx|${t}`) - 0.5) : 0
+        const v = baseVar + approxOffset
+        var_arr.push(v)
+        vol_arr.push(Math.sqrt(Math.max(v, 0)))
+      }
+      const k_active = isApprox ? Math.min(body.k ?? 100, 100) : 0
+      // Optionally trim by start/end week.
+      let s = 0, e = w
+      if (body.start_week) {
+        const i = weeks.indexOf(body.start_week)
+        if (i >= 0) s = i
+      }
+      if (body.end_week) {
+        const i = weeks.indexOf(body.end_week)
+        if (i >= 0) e = i + 1
+      }
+      return jsonResponse({
+        n: 200,
+        w: e - s,
+        mode: body.mode ?? 'full',
+        k_active,
+        weeks: weeks.slice(s, e),
+        systematic_var: var_arr.slice(s, e),
+        systematic_vol: vol_arr.slice(s, e),
+        elapsed_ms: isApprox ? 0.6 : 8.2,
+        artefact: 'mock-weekly_cov_N200_W104.npz',
+      })
+    },
+  },
 ]
 
 export function installMockFetch(): void {
