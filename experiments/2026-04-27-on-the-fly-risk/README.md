@@ -6,11 +6,14 @@ compute the per-week systematic variance σ²_t = xᵀ Σ_t x interactively
 (<200 ms end-to-end) as the user edits x?
 
 **Headline finding.** Direct evaluation is interactive up to **N=2000**
-(<1 s) and bad UX at **N=4000** (~19 s, memory-bound). A rank-30 low-rank
-reconstruction is **5 orders of magnitude faster** at every N tested and
-is the right default for production. See [report.md](report.md).
+(~800 ms) and unusable at **N=4000** (~18 s, memory-bound). With a
+precomputed per-week eigendecomposition, **k=30 approx is 783× faster
+than full at N=4000 with 0.054 % max relative error** — visually
+indistinguishable. See [report.md](report.md).
 
-**Status.** Done — backend endpoint, frontend UI, bench, and writeup are all on `main`.
+**Status.** Done — Phase 1 (full-mode endpoint, frontend) and Phase 2
+(per-week eigendecomposition + comparison UI + accuracy bench) are all
+shipped on `main`.
 
 ## Files
 

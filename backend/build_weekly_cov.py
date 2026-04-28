@@ -46,7 +46,7 @@ def gen_weekly_cov(
     """Return (cov_full, factor_ids, week_dates, eig_V, eig_D, latent_K).
 
     cov_full   : (W, N, N) float32 — dense weekly covariance matrices
-    factor_ids : (N,)      object  — synthetic factor ids "F0001" … "FNNNN"
+    factor_ids : (N,)      object  — synthetic factor ids "F0001" ... "FNNNN"
     week_dates : (W,)      str     — ISO date strings, weekly back from latest
     """
     rng = np.random.default_rng(seed)
@@ -79,21 +79,65 @@ def gen_weekly_cov(
     return cov_full, factor_ids, week_dates, l_base, spec_base
 
 
-def write_artefact(out_path: Path, n: int, weeks: int, n_latent: int, seed: int) -> None:
+def compute_eig_topk(cov_full: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """Per-week eigendecomposition, top-k eigenpairs (largest eigenvalues).
+
+    Uses np.linalg.eigh which is the standard symmetric eigendecomposition.
+    eigh returns ascending eigenvalues; we slice the last k. Compute is full
+    O(N³) per week — that's the realistic cost a production snapshot build
+    would pay (no shortcuts from the synthetic L_t loadings, since real
+    pipelines don't have those). Returns:
+
+        eig_V : (W, N, k) float32  — top-k eigenvectors per week
+        eig_D : (W, k)    float32  — top-k eigenvalues per week
+    """
+    weeks, n, _ = cov_full.shape
+    eig_V = np.empty((weeks, n, k), dtype=np.float32)
+    eig_D = np.empty((weeks, k), dtype=np.float32)
+    last_print = time.perf_counter()
+    for t in range(weeks):
+        # Promote to float64 for the eigh — float32 eigh is numerically
+        # rougher and at N=4000 we don't want spectral artefacts polluting
+        # the bench. Final storage stays float32.
+        w, v = np.linalg.eigh(cov_full[t].astype(np.float64))
+        eig_V[t] = v[:, -k:].astype(np.float32)
+        eig_D[t] = w[-k:].astype(np.float32)
+        now = time.perf_counter()
+        if now - last_print > 5.0 or t == weeks - 1:
+            print(f"    eigh week {t + 1}/{weeks}", flush=True)
+            last_print = now
+    return eig_V, eig_D
+
+
+def write_artefact(
+    out_path: Path,
+    n: int,
+    weeks: int,
+    n_latent: int,
+    seed: int,
+    eig_k: int = 0,
+) -> None:
     if out_path.exists():
         out_path.unlink()
-    print(f"generating N={n} W={weeks} (latent={n_latent})…", flush=True)
+    print(f"generating N={n} W={weeks} (latent={n_latent}, eig_k={eig_k})...", flush=True)
     t0 = time.perf_counter()
     cov_full, factor_ids, week_dates, l_base, spec_base = gen_weekly_cov(
         n=n, weeks=weeks, n_latent=n_latent, seed=seed,
     )
     gen_secs = time.perf_counter() - t0
 
-    # Eigendecomposition of cov_full[0] for the bench's "approx" mode.
-    # Storing the top-k eigenpairs across weeks is a v2 optimisation; for now
-    # we save the latent loadings (`l_base`) which gives an *exact* low-rank
-    # part of Σ_t since Σ_t = L_t L_tᵀ + diag. The bench can use these to
-    # validate accuracy.
+    extra: dict[str, np.ndarray] = {}
+    if eig_k > 0:
+        if eig_k > n:
+            print(f"  eig_k={eig_k} > N={n}, clamping", flush=True)
+            eig_k = n
+        print(f"  computing top-{eig_k} eigenpairs per week (this is O(W·N³))...", flush=True)
+        eig_t0 = time.perf_counter()
+        eig_V, eig_D = compute_eig_topk(cov_full, eig_k)
+        eig_secs = time.perf_counter() - eig_t0
+        print(f"  eigh done in {eig_secs:.1f}s", flush=True)
+        extra["eig_V"] = eig_V
+        extra["eig_D"] = eig_D
 
     # Float32 dense saves ~2x vs float64. We accept the rounding for risk-vis
     # purposes (basis-point precision is more than enough).
@@ -104,13 +148,15 @@ def write_artefact(out_path: Path, n: int, weeks: int, n_latent: int, seed: int)
         week_dates=week_dates,
         l_base=l_base,
         spec_base=spec_base,
-        meta=np.array([n, weeks, n_latent, seed], dtype=np.int64),
+        meta=np.array([n, weeks, n_latent, seed, eig_k], dtype=np.int64),
+        **extra,
     )
-    write_secs = time.perf_counter() - t0 - gen_secs
+    total_secs = time.perf_counter() - t0
     size_mb = out_path.stat().st_size / (1024 * 1024)
+    eig_note = f"  eig_k={eig_k}" if eig_k > 0 else "  eig=skipped"
     print(
-        f"  wrote {out_path.name}  shape=(W={weeks}, N={n})  "
-        f"size={size_mb:.1f} MB  gen={gen_secs:.1f}s  io={write_secs:.1f}s",
+        f"  wrote {out_path.name}  shape=(W={weeks}, N={n}){eig_note}  "
+        f"size={size_mb:.1f} MB  total={total_secs:.1f}s",
         flush=True,
     )
 
@@ -122,11 +168,18 @@ def main() -> None:
     ap.add_argument("--weeks", type=int, default=104, help="Number of weekly snapshots (default: 104).")
     ap.add_argument("--latent", type=int, default=DEFAULT_N_LATENT, help="Latent factor count (default: 30).")
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    ap.add_argument(
+        "--eig-k", type=int, default=100,
+        help="Top-k eigenpairs to precompute per week (default: 100; pass 0 to skip).",
+    )
     args = ap.parse_args()
 
     for n in args.n:
         path = weekly_cov_path(n, args.weeks)
-        write_artefact(path, n=n, weeks=args.weeks, n_latent=args.latent, seed=args.seed)
+        write_artefact(
+            path, n=n, weeks=args.weeks, n_latent=args.latent, seed=args.seed,
+            eig_k=args.eig_k,
+        )
 
 
 if __name__ == "__main__":

@@ -88,12 +88,13 @@ def artefact_path(n: int, weeks: int) -> Path:
 class BenchRow:
     n: int
     w: int
-    mode: str          # "full" | "approx-k=K"
+    mode: str          # "full" | "approx-shared-K" | "approx-eig-K"
     iter_idx: int
     elapsed_ms: float
     vol_first: float
     vol_last: float
     vol_norm: float    # ‖vol‖₂ — useful sanity check across modes
+    max_rel_err: float # vs full, computed once per (N, mode); -1 for full
     rss_mb: float
 
 
@@ -109,11 +110,22 @@ def _gen_exposure(n: int, seed: int = 17) -> np.ndarray:
     return x
 
 
-def bench_full(cov_full: np.ndarray, x: np.ndarray, iters: int, warmup: int) -> list[BenchRow]:
-    """Benchmark x^T Σ_t x via einsum across all weeks."""
+def _max_rel_err(approx_vol: np.ndarray, full_vol: np.ndarray) -> float:
+    """max |a-b|/|b| across weeks, ignoring zero-vol entries."""
+    mask = np.abs(full_vol) > 1e-10
+    if not mask.any():
+        return 0.0
+    return float(np.max(np.abs(approx_vol[mask] - full_vol[mask]) / np.abs(full_vol[mask])))
+
+
+def bench_full(cov_full: np.ndarray, x: np.ndarray, iters: int, warmup: int) -> tuple[list[BenchRow], np.ndarray]:
+    """Benchmark x^T Σ_t x via einsum across all weeks. Also returns the
+    full-mode vol vector so the approx benches can compute relative error
+    against it."""
     w = cov_full.shape[0]
     n = cov_full.shape[1]
     rows: list[BenchRow] = []
+    full_vol: np.ndarray | None = None
     for _ in range(warmup):
         _ = np.einsum("i,wij,j->w", x, cov_full, x, optimize=True)
     for k in range(iters):
@@ -123,43 +135,38 @@ def bench_full(cov_full: np.ndarray, x: np.ndarray, iters: int, warmup: int) -> 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         var_clamped = np.clip(var, 0.0, None)
         vol = np.sqrt(var_clamped)
+        if full_vol is None:
+            full_vol = vol
         rows.append(BenchRow(
             n=n, w=w, mode="full", iter_idx=k,
             elapsed_ms=elapsed_ms,
             vol_first=float(vol[0]), vol_last=float(vol[-1]),
             vol_norm=float(np.linalg.norm(vol)),
+            max_rel_err=-1.0,
             rss_mb=_rss_mb(),
         ))
-    return rows
+    return rows, full_vol if full_vol is not None else np.zeros(w)
 
 
-def bench_approx_lowrank(
+def bench_approx_shared(
     l_base: np.ndarray, spec_base: np.ndarray, w: int, x: np.ndarray, iters: int, warmup: int,
+    full_vol: np.ndarray,
 ) -> list[BenchRow]:
-    """Benchmark x^T Σ_t x using the (W=1)-shared low-rank factorisation
-    Σ_t ≈ L Lᵀ + diag(σ²). For this synthetic data we use the *base* loadings
-    and ignore the small per-week drift, which matches what a "snapshot the
-    loadings once, save tons of memory" production strategy would do.
-
-    Per query: y = Lᵀ x  (O(NK))   →   var ≈ ‖y‖² + xᵀ diag(σ²) x   (O(N+K))
-    Multiplied by W weeks, all summed in NumPy.
-
-    Note: we report a single `vol` repeated W times since the low-rank
-    approximation here uses the base loadings — the per-week drift adds
-    only the diagonal noise, which is a small effect. The bench's purpose
-    is to characterise compute, not to exactly match Σ_t.
-    """
+    """Approximation using a single shared (l_base, spec_base) across all
+    weeks — the strictest production shortcut. Doesn't track per-week drift
+    of the loadings, so accuracy degrades when drift_std × √k is comparable
+    to signal magnitudes."""
     n, k = l_base.shape
     rows: list[BenchRow] = []
+    last_vol: np.ndarray | None = None
     for _ in range(warmup):
-        y = l_base.T @ x        # (K,)
+        y = l_base.T @ x
         diag_part = float(np.dot(x * x, spec_base))
         v = float(y @ y) + diag_part
         _ = np.full(w, v, dtype=np.float64)
     for itr in range(iters):
         gc.collect()
         t0 = time.perf_counter()
-        # Single base shot — computed once, broadcast W times.
         y = l_base.T @ x
         diag_part = float(np.dot(x * x, spec_base))
         var_scalar = float(y @ y) + diag_part
@@ -167,17 +174,63 @@ def bench_approx_lowrank(
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         var_clamped = np.clip(var, 0.0, None)
         vol = np.sqrt(var_clamped)
+        last_vol = vol
         rows.append(BenchRow(
-            n=n, w=w, mode=f"approx-k={k}", iter_idx=itr,
+            n=n, w=w, mode=f"approx-shared-k={k}", iter_idx=itr,
             elapsed_ms=elapsed_ms,
             vol_first=float(vol[0]), vol_last=float(vol[-1]),
             vol_norm=float(np.linalg.norm(vol)),
+            max_rel_err=-1.0,  # filled in below
             rss_mb=_rss_mb(),
         ))
+    if last_vol is not None:
+        err = _max_rel_err(last_vol, full_vol)
+        for r in rows:
+            r.max_rel_err = err
     return rows
 
 
-def run_for_size(n: int, weeks: int, iters: int, warmup: int) -> list[BenchRow]:
+def bench_approx_eig(
+    eig_V: np.ndarray, eig_D: np.ndarray, x: np.ndarray, iters: int, warmup: int,
+    full_vol: np.ndarray, k_request: int,
+) -> list[BenchRow]:
+    """Approximation using per-week saved eigendecomposition with k_request
+    leading components. This is the production-realistic path — what an
+    actual snapshot-build pipeline would emit."""
+    weeks, n, k_saved = eig_V.shape
+    k_active = min(k_request, k_saved)
+    V = eig_V[:, :, -k_active:]
+    D = eig_D[:, -k_active:]
+    rows: list[BenchRow] = []
+    last_vol: np.ndarray | None = None
+    for _ in range(warmup):
+        y = np.einsum("wnk,n->wk", V, x, optimize=True)
+        _ = np.einsum("wk,wk->w", D, y * y, optimize=True)
+    for itr in range(iters):
+        gc.collect()
+        t0 = time.perf_counter()
+        y = np.einsum("wnk,n->wk", V, x, optimize=True)
+        var = np.einsum("wk,wk->w", D, y * y, optimize=True)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        var_clamped = np.clip(var, 0.0, None)
+        vol = np.sqrt(var_clamped)
+        last_vol = vol
+        rows.append(BenchRow(
+            n=n, w=weeks, mode=f"approx-eig-k={k_active}", iter_idx=itr,
+            elapsed_ms=elapsed_ms,
+            vol_first=float(vol[0]), vol_last=float(vol[-1]),
+            vol_norm=float(np.linalg.norm(vol)),
+            max_rel_err=-1.0,
+            rss_mb=_rss_mb(),
+        ))
+    if last_vol is not None:
+        err = _max_rel_err(last_vol, full_vol)
+        for r in rows:
+            r.max_rel_err = err
+    return rows
+
+
+def run_for_size(n: int, weeks: int, iters: int, warmup: int, k_grid: list[int]) -> list[BenchRow]:
     path = artefact_path(n, weeks)
     if not path.exists():
         print(f"  [skip] missing artefact: {path.name}", flush=True)
@@ -187,21 +240,30 @@ def run_for_size(n: int, weeks: int, iters: int, warmup: int) -> list[BenchRow]:
     cov_full = npz["cov_full"]
     l_base = npz["l_base"]
     spec_base = npz["spec_base"]
+    has_eig = "eig_V" in npz.files and "eig_D" in npz.files
+    eig_V = npz["eig_V"] if has_eig else None
+    eig_D = npz["eig_D"] if has_eig else None
     rss_after = _rss_mb()
     print(
         f"  loaded {path.name}  "
         f"shape=(W={cov_full.shape[0]}, N={cov_full.shape[1]})  "
+        f"eig={'yes' if has_eig else 'no'}  "
         f"rss delta={rss_after - rss_before:+.1f} MB ({rss_after:.1f} MB total)",
         flush=True,
     )
 
     x = _gen_exposure(n)
     rows: list[BenchRow] = []
-    rows.extend(bench_full(cov_full, x, iters=iters, warmup=warmup))
-    rows.extend(bench_approx_lowrank(l_base, spec_base, weeks, x, iters=iters, warmup=warmup))
+    full_rows, full_vol = bench_full(cov_full, x, iters=iters, warmup=warmup)
+    rows.extend(full_rows)
+    rows.extend(bench_approx_shared(l_base, spec_base, weeks, x, iters=iters, warmup=warmup, full_vol=full_vol))
+    if has_eig and eig_V is not None and eig_D is not None:
+        for k_req in k_grid:
+            if k_req > eig_V.shape[2]:
+                continue
+            rows.extend(bench_approx_eig(eig_V, eig_D, x, iters=iters, warmup=warmup, full_vol=full_vol, k_request=k_req))
 
-    # Free immediately so the next size starts clean.
-    del cov_full, l_base, spec_base, npz
+    del cov_full, l_base, spec_base, eig_V, eig_D, npz
     gc.collect()
     return rows
 
@@ -212,6 +274,8 @@ def main() -> None:
     ap.add_argument("--weeks", type=int, default=104)
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--warmup", type=int, default=2)
+    ap.add_argument("--k", type=int, nargs="+", default=[10, 30, 50, 100],
+                    help="k values to test for the per-week eig approx mode (default: 10 30 50 100).")
     ap.add_argument("--out", type=Path, default=None,
                     help="CSV path (default: experiments/.../results/<timestamp>.csv)")
     args = ap.parse_args()
@@ -227,7 +291,7 @@ def main() -> None:
     all_rows: list[BenchRow] = []
     for n in args.n:
         print(f"--- N={n} ---", flush=True)
-        all_rows.extend(run_for_size(n, args.weeks, args.iters, args.warmup))
+        all_rows.extend(run_for_size(n, args.weeks, args.iters, args.warmup, args.k))
 
     if not all_rows:
         print("no results — were any artefacts present?", flush=True)
@@ -236,15 +300,17 @@ def main() -> None:
     # Aggregate per (N, mode): median elapsed_ms, the vol_norm (should be
     # consistent across iters), and the rss after the run.
     print("\nsummary (median over iters):")
-    print(f"  {'N':>5}  {'W':>4}  {'mode':<14}  {'p50_ms':>10}  {'min_ms':>10}  {'rss_mb':>10}")
+    print(f"  {'N':>5}  {'W':>4}  {'mode':<22}  {'p50_ms':>11}  {'min_ms':>11}  {'max_rel_err':>12}")
     by_key: dict[tuple[int, str], list[BenchRow]] = {}
     for r in all_rows:
         by_key.setdefault((r.n, r.mode), []).append(r)
     for (n, mode), rs in sorted(by_key.items()):
         ms = sorted(r.elapsed_ms for r in rs)
         p50 = ms[len(ms) // 2]
+        err = rs[0].max_rel_err
+        err_str = f"{err * 100:.4f}%" if err >= 0 else "n/a"
         print(
-            f"  {n:>5}  {rs[0].w:>4}  {mode:<14}  {p50:>9.2f}ms  {ms[0]:>9.2f}ms  {rs[-1].rss_mb:>9.1f}MB",
+            f"  {n:>5}  {rs[0].w:>4}  {mode:<22}  {p50:>10.3f}ms  {ms[0]:>10.3f}ms  {err_str:>12}",
             flush=True,
         )
 

@@ -102,12 +102,26 @@ class WeeklyCovStore:
         self.n = int(meta[0])
         self.w = int(meta[1])
         self.n_latent = int(meta[2])
+        # eig arrays may be missing on older artefacts — gate on key
+        # presence rather than exception-catching to avoid mmap surprises.
+        keys = set(npz.files)
+        if "eig_V" in keys and "eig_D" in keys:
+            self.eig_V: np.ndarray | None = npz["eig_V"]
+            self.eig_D: np.ndarray | None = npz["eig_D"]
+            self.eig_k: int = int(self.eig_D.shape[1])
+        else:
+            self.eig_V = None
+            self.eig_D = None
+            self.eig_k = 0
         self.factor_id_index: dict[str, int] = {
             str(fid): i for i, fid in enumerate(self.factor_ids)
         }
         self.week_index: dict[str, int] = {
             str(d): i for i, d in enumerate(self.week_dates)
         }
+
+    def has_approx(self) -> bool:
+        return self.eig_V is not None and self.eig_D is not None
 
     def quadratic(
         self,
@@ -125,6 +139,31 @@ class WeeklyCovStore:
         end = end_idx if end_idx is not None else self.w
         sub = self.cov_full[start_idx:end]
         return np.einsum("i,wij,j->w", exposures, sub, exposures, optimize=True)
+
+    def quadratic_approx(
+        self,
+        exposures: np.ndarray,
+        start_idx: int = 0,
+        end_idx: int | None = None,
+        k: int | None = None,
+    ) -> np.ndarray:
+        """σ²_t ≈ Σ_κ D_t[κ] · (V_t[:,κ]ᵀ x)²  using the top-k eigenpairs.
+
+        The active rank is min(k, self.eig_k). Per-week cost is O(N·k_active),
+        which is far below the O(N²) of `quadratic()` for any k_active ≪ N.
+        """
+        if not self.has_approx():
+            raise RuntimeError("artefact has no eig arrays — rebuild with --eig-k > 0")
+        end = end_idx if end_idx is not None else self.w
+        # eig_V is (W, N, K). Optionally narrow to the user's requested k.
+        k_active = self.eig_k if k is None else min(int(k), self.eig_k)
+        # Take the *top* k_active components — eig_D is sorted ascending in
+        # the artefact, so the last k_active are the largest.
+        V = self.eig_V[start_idx:end, :, -k_active:]      # (W, N, k_active)
+        D = self.eig_D[start_idx:end, -k_active:]          # (W, k_active)
+        # y_t = V_tᵀ x  →  σ²_t = Σ_k D_t[k] · y_t[k]²
+        y = np.einsum("wnk,n->wk", V, exposures, optimize=True)
+        return np.einsum("wk,wk->w", D, y * y, optimize=True)
 
 
 def _find_weekly_cov_artefact() -> Path | None:
@@ -555,6 +594,9 @@ def get_covariance_subset(
 # Quadratic form xᵀ Σ_t x evaluated across the loaded weekly covariance
 # tensor. Backed by a memory-mapped .npz produced by build_weekly_cov.py.
 
+QuadMode = Literal["full", "approx"]
+
+
 class QuadraticRequest(BaseModel):
     # Two ways to pass exposures:
     # 1) Dense ordered vector matching the artefact's factor_id order.
@@ -568,11 +610,20 @@ class QuadraticRequest(BaseModel):
     exposures_by_factor: dict[str, float] | None = None
     start_week: str | None = None
     end_week: str | None = None
+    # 'full' = direct xᵀ Σ_t x via BLAS GEMV. Always available.
+    # 'approx' = top-k eigendecomposition reconstruction. Requires the
+    #            artefact to have been built with --eig-k > 0.
+    mode: QuadMode = "full"
+    # Used only by mode=approx. None = use the full saved k. Capped at the
+    # saved k.
+    k: int | None = None
 
 
 class QuadraticResponse(BaseModel):
     n: int                       # factor universe size
     w: int                       # number of weeks returned
+    mode: QuadMode               # echoed back
+    k_active: int                # how many eigenpairs were actually used (0 for full)
     weeks: list[str]             # ISO date strings, oldest → newest
     systematic_var: list[float]  # σ²_t
     systematic_vol: list[float]  # √σ²_t (clipped at 0 to avoid NaN on numerical noise)
@@ -584,6 +635,7 @@ class QuadraticInfo(BaseModel):
     n: int
     w: int
     n_latent: int
+    eig_k: int                  # 0 if artefact has no eigendecomposition
     weeks: list[str]
     factor_ids: list[str]
     artefact: str
@@ -599,6 +651,7 @@ def get_risk_quadratic_info():
         n=store.n,
         w=store.w,
         n_latent=store.n_latent,
+        eig_k=store.eig_k,
         weeks=[str(d) for d in store.week_dates],
         factor_ids=[str(f) for f in store.factor_ids],
         artefact=store.path.name,
@@ -653,8 +706,23 @@ def post_risk_quadratic(req: QuadraticRequest):
     if end_idx <= start_idx:
         raise HTTPException(400, "end_week must be on or after start_week")
 
+    # Dispatch by mode.
+    k_active = 0
+    if req.mode == "approx":
+        if not store.has_approx():
+            raise HTTPException(
+                503,
+                f"artefact {store.path.name} was built without eigh precompute; "
+                f"rebuild with `python build_weekly_cov.py --eig-k 100` to use mode=approx",
+            )
+        k_active = store.eig_k if req.k is None else min(int(req.k), store.eig_k)
+        if k_active <= 0:
+            raise HTTPException(400, "k must be positive for mode=approx")
     t0 = time.perf_counter()
-    var = store.quadratic(x, start_idx=start_idx, end_idx=end_idx)
+    if req.mode == "approx":
+        var = store.quadratic_approx(x, start_idx=start_idx, end_idx=end_idx, k=k_active)
+    else:
+        var = store.quadratic(x, start_idx=start_idx, end_idx=end_idx)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     # Numerical noise can drive very small variance values slightly negative
@@ -664,6 +732,8 @@ def post_risk_quadratic(req: QuadraticRequest):
     return QuadraticResponse(
         n=store.n,
         w=int(end_idx - start_idx),
+        mode=req.mode,
+        k_active=k_active,
         weeks=[str(d) for d in store.week_dates[start_idx:end_idx]],
         systematic_var=var.astype(np.float64).tolist(),
         systematic_vol=vol.astype(np.float64).tolist(),

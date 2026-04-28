@@ -18,6 +18,7 @@ interface QuadraticInfo {
   n: number
   w: number
   n_latent: number
+  eig_k: number
   weeks: string[]
   factor_ids: string[]
   artefact: string
@@ -27,12 +28,24 @@ interface QuadraticInfo {
 interface QuadraticResponse {
   n: number
   w: number
+  mode: 'full' | 'approx'
+  k_active: number
   weeks: string[]
   systematic_var: number[]
   systematic_vol: number[]
   elapsed_ms: number
   artefact: string
 }
+
+type Mode = 'full' | 'approx' | 'both'
+
+const MODES: { id: Mode; label: string; hint: string }[] = [
+  { id: 'full',   label: 'Full',     hint: 'Direct xᵀ Σ_t x via BLAS' },
+  { id: 'approx', label: 'Approx',   hint: 'Top-k eigendecomposition' },
+  { id: 'both',   label: 'Both',     hint: 'Overlay + relative error' },
+]
+
+const K_OPTIONS = [10, 30, 50, 100]
 
 type Preset = 'unit' | 'normal' | 'sparse' | 'zero'
 
@@ -105,7 +118,10 @@ export function RiskOverTime() {
   const [infoError, setInfoError] = useState<string | null>(null)
   const [preset, setPreset] = useState<Preset>('normal')
   const [overrideText, setOverrideText] = useState<string>('')
-  const [resp, setResp] = useState<QuadraticResponse | null>(null)
+  const [mode, setMode] = useState<Mode>('both')
+  const [k, setK] = useState<number>(100)
+  const [respFull, setRespFull] = useState<QuadraticResponse | null>(null)
+  const [respApprox, setRespApprox] = useState<QuadraticResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [lastRoundtripMs, setLastRoundtripMs] = useState<number | null>(null)
@@ -139,8 +155,11 @@ export function RiskOverTime() {
     return x
   }, [info, preset, overrideText])
 
-  // Fire request whenever exposures change. Debounce so typing in the
-  // overrides textarea doesn't fire dozens of inflight requests.
+  // Fire request(s) whenever exposures or mode/k change. Debounce so
+  // typing in the overrides textarea doesn't fire dozens of inflight
+  // requests. In 'both' mode we issue full + approx as separate POSTs in
+  // parallel — the server does the heavy lifting and the responses arrive
+  // independently.
   useEffect(() => {
     if (!exposures) return
     if (debounceRef.current) window.clearTimeout(debounceRef.current)
@@ -151,20 +170,49 @@ export function RiskOverTime() {
       setLoading(true)
       setError(null)
       const t0 = performance.now()
-      fetch(`${API}/api/risk/quadratic`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exposures }),
-        signal: ctrl.signal,
-      })
-        .then(async r => {
-          if (!r.ok) throw new Error(`risk ${r.status}: ${await r.text()}`)
-          return r.json() as Promise<QuadraticResponse>
-        })
-        .then(d => {
-          setResp(d)
-          setLastRoundtripMs(performance.now() - t0)
-        })
+
+      const wantFull = mode === 'full' || mode === 'both'
+      const wantApprox = mode === 'approx' || mode === 'both'
+
+      const requests: Promise<unknown>[] = []
+      if (wantFull) {
+        requests.push(
+          fetch(`${API}/api/risk/quadratic`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exposures, mode: 'full' }),
+            signal: ctrl.signal,
+          })
+            .then(async r => {
+              if (!r.ok) throw new Error(`full ${r.status}: ${await r.text()}`)
+              return r.json() as Promise<QuadraticResponse>
+            })
+            .then(d => setRespFull(d)),
+        )
+      } else {
+        setRespFull(null)
+      }
+
+      if (wantApprox) {
+        requests.push(
+          fetch(`${API}/api/risk/quadratic`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exposures, mode: 'approx', k }),
+            signal: ctrl.signal,
+          })
+            .then(async r => {
+              if (!r.ok) throw new Error(`approx ${r.status}: ${await r.text()}`)
+              return r.json() as Promise<QuadraticResponse>
+            })
+            .then(d => setRespApprox(d)),
+        )
+      } else {
+        setRespApprox(null)
+      }
+
+      Promise.all(requests)
+        .then(() => setLastRoundtripMs(performance.now() - t0))
         .catch(err => {
           if ((err as Error).name === 'AbortError') return
           setError(String(err))
@@ -174,36 +222,49 @@ export function RiskOverTime() {
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current)
     }
-  }, [exposures])
+  }, [exposures, mode, k])
 
   const chartOptions = useMemo<AgChartOptions>(() => {
-    if (!resp) return { data: [], series: [], background: { visible: false } }
-    const data = resp.weeks.map((w, i) => ({
+    const ref = respFull ?? respApprox
+    if (!ref) return { data: [], series: [], background: { visible: false } }
+    // Build the row dataset by week index, attaching whichever series we
+    // have. AG Charts handles missing keys per row by skipping.
+    const data = ref.weeks.map((w, i) => ({
       week: w,
-      vol: resp.systematic_vol[i],
-      var: resp.systematic_var[i],
+      volFull: respFull?.systematic_vol[i],
+      volApprox: respApprox?.systematic_vol[i],
     }))
+    // Series is an AG Charts tagged union — easier to build as plain
+    // objects and cast at use, same pattern the other AG-driven charts use.
+    const series: object[] = []
+    if (respFull) {
+      series.push({
+        type: 'line',
+        xKey: 'week',
+        yKey: 'volFull',
+        yName: 'Full',
+        stroke: '#37D399',
+        strokeWidth: 2,
+        marker: { enabled: false },
+      })
+    }
+    if (respApprox) {
+      series.push({
+        type: 'line',
+        xKey: 'week',
+        yKey: 'volApprox',
+        yName: `Approx k=${respApprox.k_active}`,
+        stroke: '#FF7849',
+        strokeWidth: 1.5,
+        lineDash: [4, 3],
+        marker: { enabled: false },
+      })
+    }
     return {
       data,
       background: { fill: '#0B0F1A' },
       padding: { left: 16, right: 24, top: 12, bottom: 12 },
-      series: [
-        {
-          type: 'line',
-          xKey: 'week',
-          yKey: 'vol',
-          yName: 'Systematic σ',
-          stroke: '#37D399',
-          strokeWidth: 2,
-          marker: { enabled: false },
-          tooltip: {
-            renderer: ({ datum }: { datum: { week: string; vol: number } }) => ({
-              title: datum.week,
-              content: `σ = <b>${datum.vol.toFixed(4)}</b>`,
-            }),
-          },
-        },
-      ] as AgChartOptions['series'],
+      series: series as AgChartOptions['series'],
       axes: [
         {
           type: 'time',
@@ -227,21 +288,42 @@ export function RiskOverTime() {
           gridLine: { style: [{ stroke: '#1e293b', lineDash: [2, 2] }] },
         },
       ],
-      legend: { enabled: false },
+      legend: {
+        enabled: !!(respFull && respApprox),
+        position: 'top',
+        item: { label: { color: '#cbd5e1', fontSize: 11 }, marker: { size: 8 } },
+      },
     } as AgChartOptions
-  }, [resp])
+  }, [respFull, respApprox])
 
   const summary = useMemo(() => {
-    if (!resp) return null
-    const vols = resp.systematic_vol
+    const ref = respFull ?? respApprox
+    if (!ref) return null
+    const vols = ref.systematic_vol
     let mn = Infinity, mx = -Infinity, sum = 0
     for (const v of vols) {
       if (v < mn) mn = v
       if (v > mx) mx = v
       sum += v
     }
-    return { min: mn, max: mx, mean: sum / vols.length, n: vols.length }
-  }, [resp])
+    let maxRelErr: number | null = null
+    let meanRelErr: number | null = null
+    if (respFull && respApprox && respFull.systematic_vol.length === respApprox.systematic_vol.length) {
+      let mxErr = 0, sumErr = 0
+      const n = respFull.systematic_vol.length
+      for (let i = 0; i < n; i++) {
+        const a = respFull.systematic_vol[i]
+        const b = respApprox.systematic_vol[i]
+        if (Math.abs(a) < 1e-10) continue
+        const e = Math.abs(b - a) / Math.abs(a)
+        if (e > mxErr) mxErr = e
+        sumErr += e
+      }
+      maxRelErr = mxErr
+      meanRelErr = sumErr / n
+    }
+    return { min: mn, max: mx, mean: sum / vols.length, n: vols.length, maxRelErr, meanRelErr }
+  }, [respFull, respApprox])
 
   if (infoError) {
     return (
@@ -280,15 +362,40 @@ export function RiskOverTime() {
           </div>
           {info && (
             <span className="bc-meta">
-              N={info.n}, W={info.w}, k_latent={info.n_latent} · {info.artefact} ({info.artefact_mb.toFixed(0)} MB)
+              N={info.n}, W={info.w}, eig_k={info.eig_k || '—'} · {info.artefact} ({info.artefact_mb.toFixed(0)} MB)
             </span>
           )}
         </div>
         <div className="chart-subbar-right">
+          <div className="orient-toggle" role="tablist" aria-label="Mode">
+            {MODES.map(m => (
+              <button
+                key={m.id}
+                role="tab"
+                aria-selected={mode === m.id}
+                className={mode === m.id ? 'active' : ''}
+                onClick={() => setMode(m.id)}
+                title={m.hint}
+                disabled={(m.id === 'approx' || m.id === 'both') && (!info || info.eig_k === 0)}
+              >{m.label}</button>
+            ))}
+          </div>
+          {(mode === 'approx' || mode === 'both') && info && info.eig_k > 0 && (
+            <label className="ctl">
+              <span>k</span>
+              <select value={k} onChange={(e) => setK(Number(e.target.value))}>
+                {K_OPTIONS.filter(opt => opt <= info.eig_k).map(opt => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </label>
+          )}
           {loading && <span className="bc-meta">computing…</span>}
-          {!loading && lastRoundtripMs != null && resp && (
+          {!loading && lastRoundtripMs != null && (respFull || respApprox) && (
             <span className="bc-meta">
-              roundtrip {lastRoundtripMs.toFixed(0)}ms · server {resp.elapsed_ms.toFixed(1)}ms
+              roundtrip {lastRoundtripMs.toFixed(0)}ms
+              {respFull && ` · full ${respFull.elapsed_ms.toFixed(1)}ms`}
+              {respApprox && ` · approx ${respApprox.elapsed_ms.toFixed(1)}ms`}
             </span>
           )}
         </div>
@@ -311,7 +418,14 @@ export function RiskOverTime() {
             <div><span>min σ</span><b>{summary.min.toFixed(4)}</b></div>
             <div><span>max σ</span><b>{summary.max.toFixed(4)}</b></div>
             <div><span>mean σ</span><b>{summary.mean.toFixed(4)}</b></div>
-            <div><span>weeks</span><b>{summary.n}</b></div>
+            {summary.maxRelErr !== null ? (
+              <div title="max |approx − full| / full across all weeks">
+                <span>max rel err</span>
+                <b>{(summary.maxRelErr * 100).toFixed(3)}%</b>
+              </div>
+            ) : (
+              <div><span>weeks</span><b>{summary.n}</b></div>
+            )}
           </div>
         )}
       </div>
@@ -319,7 +433,7 @@ export function RiskOverTime() {
       <div className="chart-canvas-wrap">
         {error ? (
           <div className="charts-empty"><span style={{ color: '#fca5a5' }}>{error}</span></div>
-        ) : resp ? (
+        ) : (respFull || respApprox) ? (
           <AgCharts options={chartOptions} />
         ) : (
           <div className="charts-empty"><span>{info ? 'Computing…' : 'Loading artefact metadata…'}</span></div>
