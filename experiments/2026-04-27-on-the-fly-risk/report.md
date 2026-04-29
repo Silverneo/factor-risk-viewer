@@ -241,11 +241,38 @@ Source: [`results/zarr_sim_20260430T025443.csv`](results/zarr_sim_20260430T02544
 `backend/bench/zarr_minio_sim.py` exercises the same code path against
 a real MinIO server on localhost (free AGPL binary, no AWS account).
 Setup is in the script's docstring — download `minio.exe`, start the
-server, run the script. The s3fs/aiobotocore round-trip on localhost is
-sub-millisecond, so MinIO numbers should track the simulated
-`zarr-minio_lh` row closely. Larger gaps would indicate something the
-simulator missed (auth round-trips, retry behaviour, async-pool
-scheduling artefacts).
+server, run the script.
+
+Result at N=1000, W=104:
+
+| Mode | Sim `zarr-minio_lh` | Real MinIO | Ratio |
+|---|---:|---:|---:|
+| full-stream | 3 337 ms | 4 388 ms | 1.3× |
+| full-bulk | 290 ms | 995 ms | 3.4× |
+| approx-bulk-k=30 | 113 ms | 493 ms | 4.4× |
+
+Source: [`results/zarr_minio_20260430T033653.csv`](results/zarr_minio_20260430T033653.csv).
+
+The simulator was optimistic by 1.3–4.4× — the gap is what `boto3 +
+aiobotocore` adds on top of raw network: connection-pool warm-up,
+per-request signing, async-scheduler overhead. The *shape* of the
+curve (stream slow, bulk fast, approx fastest) is the same; magnitudes
+need a multiplier. Practical reading:
+
+- **Multiply the simulator's `zarr-minio_lh` numbers by ~3–4×** when
+  estimating real S3 + AWS-SDK behaviour. So the projected N=4000
+  full-bulk in-region (6.4 s simulated) is more like 20–25 s in
+  practice; approx-bulk (170 ms) is more like 600–800 ms.
+- The **streaming variant degrades less** in real-world conditions
+  because per-fetch overheads were already its dominant cost in the
+  simulator.
+
+Implementation note: `s3fs.S3FileSystem` must be constructed with
+`asynchronous=True` when handing it to zarr's `FsspecStore`. Without
+it zarr's internal event loop and aiobotocore's loop conflict, raising
+`Future attached to a different loop`. The script handles this — keep
+the sync fs for the upload + bucket-create path, use the async fs
+inside zarr.
 
 ## What's deployable now
 

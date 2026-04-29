@@ -92,14 +92,17 @@ class MinioRow:
     elapsed_s: float
 
 
-def _make_fs(endpoint: str, access_key: str, secret_key: str) -> s3fs.S3FileSystem:
-    """s3fs handle pointed at MinIO. We disable SSL/cert checking
-    because the local server runs on plain HTTP."""
+def _make_fs(endpoint: str, access_key: str, secret_key: str, asynchronous: bool = False) -> s3fs.S3FileSystem:
+    """s3fs handle pointed at MinIO. `asynchronous=True` is required when
+    handing the fs to zarr's FsspecStore — without it zarr's event loop
+    and aiobotocore's loop don't agree, producing the "Future attached
+    to a different loop" error."""
     return s3fs.S3FileSystem(
         key=access_key,
         secret=secret_key,
         client_kwargs={"endpoint_url": endpoint},
         use_ssl=endpoint.startswith("https"),
+        asynchronous=asynchronous,
     )
 
 
@@ -222,7 +225,10 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
-    fs = _make_fs(args.endpoint, args.access_key, args.secret_key)
+    # Sync fs for the bucket-create + upload path; async fs for zarr.
+    fs_sync = _make_fs(args.endpoint, args.access_key, args.secret_key, asynchronous=False)
+    fs_async = _make_fs(args.endpoint, args.access_key, args.secret_key, asynchronous=True)
+    fs = fs_sync
     if not _check_minio(fs):
         print(
             "\nMinIO doesn't seem to be running.\n"
@@ -238,7 +244,8 @@ def main() -> None:
     _ensure_bucket(fs, args.bucket)
     s3_prefix = _ensure_artefact_in_minio(fs, args.bucket, args.n, args.weeks, force=args.upload)
 
-    rows = bench_minio(args.n, args.weeks, args.k, args.iters, args.warmup, fs, s3_prefix)
+    # zarr needs the async-mode fs.
+    rows = bench_minio(args.n, args.weeks, args.k, args.iters, args.warmup, fs_async, s3_prefix)
 
     # Per-mode median summary.
     by_mode: dict[str, list[MinioRow]] = {}

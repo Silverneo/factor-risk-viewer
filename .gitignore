@@ -61,6 +61,9 @@ backend/weekly_cov_*.npz
 backend/weekly_cov_*.zarr/
 
 # MinIO local server data + binary — bench/zarr_minio_sim.py setup
+# Cover both the documented backend/.tools/ and the repo-root .tools/.
+.tools/
+.minio-data/
 backend/.minio-data/
 backend/.tools/
 
