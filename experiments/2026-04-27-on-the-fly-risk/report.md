@@ -20,7 +20,7 @@ N tested. Setting `k=30` is the sweet spot — going below the true rank
 (k=10) blows error up to ~30 %; going above it adds compute without
 improving accuracy.
 
-## Phase 1 vs Phase 2 vs Phase 3
+## Phases
 
 - **Phase 1**: full-mode endpoint + frontend + bench against a
   "shared base loadings" approximation (a useful upper bound on
@@ -31,8 +31,11 @@ improving accuracy.
   Approx mode's relative advantage shrinks but the eig precompute is
   still worthwhile because the eig-only artefact is ~40× smaller on
   disk.
+- **Phase 4**: Zarr-on-S3 simulation. Validates that approx is
+  interactive when served from object storage even cross-region;
+  full is audit-only over S3 at N=4000.
 
-This report reflects post–Phase-3 numbers throughout.
+This report reflects post–Phase-4 numbers throughout.
 
 ## Numbers
 
@@ -159,6 +162,79 @@ For a production deployment of this app:
 - **Concurrency.** Single-process bench. A multi-user deployment would
   need to validate that mmap'd reads don't serialise on the OS page
   cache; spot evidence suggests they don't, but it isn't measured.
+
+## Phase 4 — Zarr-on-S3 latency simulation
+
+**Question.** If the deployed backend can't fit the artefact on local
+disk, can we serve `mode=full` and `mode=approx` from object storage
+(S3 / MinIO) without sacrificing interactivity?
+
+**Tool.** `backend/bench/zarr_local_sim.py` converts an existing
+`weekly_cov_*.npz` to a chunked Zarr store, then wraps the local store
+in a `LatencyStore` (`zarr.storage.WrapperStore` subclass) that injects
+a configurable per-GET first-byte latency + bandwidth cap on every
+chunk fetch. Lets us reproduce S3 access patterns without an AWS
+account.
+
+**Scenarios benched** (per-GET first-byte / sustained throughput):
+
+| label | p50 first byte | sustained | models |
+|---|---:|---:|---|
+| `zarr-local` | 0 | unlimited | DirectoryStore baseline |
+| `zarr-minio_lh` | 0.5 ms | 10 Gbps | MinIO on localhost |
+| `zarr-aws_inreg` | 5 ms | 5 Gbps | S3 in same region |
+| `zarr-aws_xreg` | 80 ms | 500 Mbps | S3 cross-region |
+
+### Headline at N=4000, W=104
+
+Source: [`results/zarr_sim_20260430T025443.csv`](results/zarr_sim_20260430T025443.csv).
+
+| Scenario | full (stream) | full (bulk) | approx-k=30 (bulk) | bytes (full / approx) |
+|---|---:|---:|---:|---:|
+| baseline numpy (RAM) | — | 1.17 s | 37 ms | 0 / 0 |
+| zarr-local | 7.1 s | 5.1 s | 217 ms | 6.35 GB / 159 MB |
+| zarr-minio_lh | 13.7 s | **5.7 s** | **150 ms** | 6.35 GB / 159 MB |
+| zarr-aws_inreg | 18.8 s | **6.4 s** | **170 ms** | 6.35 GB / 159 MB |
+| zarr-aws_xreg | 118.2 s | **15.5 s** | **2.6 s** | 6.35 GB / 159 MB |
+
+### What this tells us
+
+1. **Bulk slice (`cov[s:e]`) parallelises chunk fetches; per-week
+   loop serialises them.** At N=4000 the difference is 2–8× depending
+   on latency. Critically, this is a code-shape choice — same chunks,
+   same bytes, different concurrency. Always slice when fetching from
+   a remote store.
+
+2. **`mode=approx` is interactive over S3 at every latency level
+   tested** — 150 ms in-region cold to 2.6 s cross-region cold. The
+   eig artefact's 40× bandwidth advantage (159 MB vs 6.35 GB per
+   query) directly translates to that ratio in cold-cache wall-clock
+   when bandwidth is the bottleneck.
+
+3. **`mode=full` over S3 is "audit only"** at N=4000 — 5–6 s in-region,
+   16 s cross-region. The 6.35 GB per query is a fundamental cost; no
+   chunking strategy reduces it because the math reads every byte.
+
+4. **Zarr's per-chunk Python overhead is real** but mostly hidden by
+   bulk fetch + parallel scheduling. The streaming variant exposes it
+   (~30 ms per chunk on top of network), which is why streaming is so
+   much worse than bulk at low-latency settings.
+
+### Practical recommendations
+
+- **Storage layout**: chunk Σ_t by week, `chunks=(1, N, N)`. Per-query
+  fetch count = number of weeks requested.
+- **Read pattern**: always `arr[s:e]` for a contiguous range, never a
+  per-week loop. Lets zarr/asyncio fetch chunks in parallel.
+- **For interactive UIs**: ship `mode=approx` as the default. Fits in
+  any storage, sub-second cold-cache anywhere short of cross-continent
+  S3.
+- **For "compute" buttons / audit**: `mode=full` over S3 is acceptable
+  in-region (5–6 s at N=4000) but costs 16 s cross-region. Plan
+  region-locality.
+- **Add an LRU on top of the S3 store** if your traffic re-uses week
+  ranges — warm queries collapse to compute-only (~1 s for full, ~40 ms
+  for approx at N=4000).
 
 ## What's deployable now
 
