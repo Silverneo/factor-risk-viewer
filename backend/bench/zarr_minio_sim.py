@@ -71,6 +71,7 @@ from bench.zarr_local_sim import (
     quadratic_full_bulk,
     quadratic_approx_bulk,
 )
+from lru_zarr import LRUWrapperStore
 
 HERE = Path(__file__).resolve().parents[1]
 EXPERIMENT_DIR = HERE.parents[0] / "experiments" / "2026-04-27-on-the-fly-risk"
@@ -90,6 +91,9 @@ class MinioRow:
     mode: str              # full-stream | full-bulk | approx-bulk-k=K
     iter_idx: int
     elapsed_s: float
+    cache_kind: str = ""   # "" | "cold" | "warm"
+    cache_hits: int = 0
+    cache_misses: int = 0
 
 
 def _make_fs(endpoint: str, access_key: str, secret_key: str, asynchronous: bool = False) -> s3fs.S3FileSystem:
@@ -151,12 +155,19 @@ def _ensure_artefact_in_minio(
     return s3_prefix
 
 
-def _open_remote_group(fs: s3fs.S3FileSystem, s3_prefix: str) -> zarr.Group:
-    """Open the remote Zarr group via FsspecStore. The store mediates
-    every chunk fetch through s3fs/aiobotocore — same code path as a
-    real AWS S3 deployment."""
+def _open_remote_group(
+    fs: s3fs.S3FileSystem, s3_prefix: str, lru_mb: int = 0,
+) -> tuple[zarr.Group, LRUWrapperStore | None]:
+    """Open the remote Zarr group via FsspecStore. Optionally wraps
+    the store in an LRU chunk cache so warm queries can be measured."""
     store = FsspecStore(fs, path=s3_prefix)
-    return zarr.open_group(store=store, mode="r")
+    cached: LRUWrapperStore | None = None
+    if lru_mb > 0:
+        cached = LRUWrapperStore(store, max_bytes=lru_mb * 1024 * 1024)
+        store_for_zarr = cached
+    else:
+        store_for_zarr = store
+    return zarr.open_group(store=store_for_zarr, mode="r"), cached
 
 
 def bench_minio(
@@ -167,8 +178,9 @@ def bench_minio(
     warmup: int,
     fs: s3fs.S3FileSystem,
     s3_prefix: str,
+    lru_mb: int = 0,
 ) -> list[MinioRow]:
-    root = _open_remote_group(fs, s3_prefix)
+    root, cached = _open_remote_group(fs, s3_prefix, lru_mb=lru_mb)
     cov = root["cov_full"]
     has_eig = "eig_V" in [str(p).split("/")[-1] for p in root]
     eig_V = root["eig_V"] if has_eig else None
@@ -180,19 +192,38 @@ def bench_minio(
 
     rows: list[MinioRow] = []
 
+    def kind_for(it: int) -> str:
+        if cached is None:
+            return ""
+        return "warm" if it > 0 else "cold"
+
     def time_it(fn, mode: str) -> None:
+        # When LRU is on, clear the cache before this mode's first iter
+        # so the cold/warm split is honest.
+        if cached is not None:
+            cached.clear_cache()
         for _ in range(warmup):
             _ = fn()
+        # If we ran warmup and LRU is on, that already populated the
+        # cache — re-clear so iter 0 is genuinely cold.
+        if cached is not None and warmup > 0:
+            cached.clear_cache()
         for it in range(iters):
             gc.collect()
+            if cached is not None:
+                cached.reset_stats()
             t0 = time.perf_counter()
             _ = fn()
             elapsed = time.perf_counter() - t0
             rows.append(MinioRow(
                 n=n, w=weeks, scenario="minio-real", mode=mode,
                 iter_idx=it, elapsed_s=elapsed,
+                cache_kind=kind_for(it),
+                cache_hits=cached.stats.hits if cached else 0,
+                cache_misses=cached.stats.misses if cached else 0,
             ))
-            print(f"  {mode:<22}  iter {it}  {elapsed * 1000:>9.1f} ms", flush=True)
+            tag = f" [{kind_for(it)}]" if cached else ""
+            print(f"  {mode:<22}  iter {it}{tag}  {elapsed * 1000:>9.1f} ms", flush=True)
 
     # NOTE: warmup matters more here than in the local sim, because
     # the first request through aiobotocore does extra TLS / connection
@@ -222,6 +253,9 @@ def main() -> None:
     ap.add_argument("--access-key", default=os.environ.get("MINIO_ACCESS_KEY", DEFAULT_ACCESS_KEY))
     ap.add_argument("--secret-key", default=os.environ.get("MINIO_SECRET_KEY", DEFAULT_SECRET_KEY))
     ap.add_argument("--upload", action="store_true", help="Re-upload the artefact even if present.")
+    ap.add_argument("--lru-mb", type=int, default=0,
+                    help="If >0, wrap the FsspecStore in an LRU chunk cache of this many MB. "
+                         "iter 0 = cold, iter >=1 = warm.")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -245,18 +279,24 @@ def main() -> None:
     s3_prefix = _ensure_artefact_in_minio(fs, args.bucket, args.n, args.weeks, force=args.upload)
 
     # zarr needs the async-mode fs.
-    rows = bench_minio(args.n, args.weeks, args.k, args.iters, args.warmup, fs_async, s3_prefix)
+    rows = bench_minio(args.n, args.weeks, args.k, args.iters, args.warmup,
+                       fs_async, s3_prefix, lru_mb=args.lru_mb)
 
-    # Per-mode median summary.
-    by_mode: dict[str, list[MinioRow]] = {}
+    # Per (mode, cache_kind) median summary so cold/warm are visible.
+    by_key: dict[tuple[str, str], list[MinioRow]] = {}
     for r in rows:
-        by_mode.setdefault(r.mode, []).append(r)
+        by_key.setdefault((r.mode, r.cache_kind), []).append(r)
     print("\nsummary (median over iters):")
-    print(f"  {'mode':<22}  {'p50_ms':>10}  {'min_ms':>10}")
-    for mode, rs in sorted(by_mode.items()):
+    print(f"  {'mode':<22}  {'cache':<5}  {'p50_ms':>10}  {'min_ms':>10}  {'hits':>5}/{'miss':>5}")
+    for (mode, kind), rs in sorted(by_key.items()):
         ts = sorted(r.elapsed_s for r in rs)
         p50 = ts[len(ts) // 2]
-        print(f"  {mode:<22}  {p50 * 1000:>9.1f}ms  {ts[0] * 1000:>9.1f}ms", flush=True)
+        rep = rs[len(rs) // 2]
+        print(
+            f"  {mode:<22}  {kind:<5}  {p50 * 1000:>9.1f}ms  {ts[0] * 1000:>9.1f}ms  "
+            f"{rep.cache_hits:>5}/{rep.cache_misses:>5}",
+            flush=True,
+        )
 
     if args.out is None:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)

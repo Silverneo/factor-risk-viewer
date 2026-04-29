@@ -14,10 +14,9 @@ gave a ~110× speedup. The per-week eigendecomposition (Phase 2) is
 still a useful path because the eig-only artefact is ~40× smaller on
 disk (160 MB vs 6.6 GB at N=4000). See [report.md](report.md).
 
-**Status.** Done — Phase 1 (full-mode endpoint, frontend), Phase 2
-(per-week eigendecomposition + comparison UI + accuracy bench), and
-Phase 3 (einsum bug fix in WeeklyCovStore.quadratic) all shipped on
-`main`.
+**Status.** Done — Phases 1-3 (math + UI + bug fix) plus Phase 4
+(Zarr-on-S3 simulation, real MinIO calibration) and Phase 5 (LRU
+chunk cache wired into the production API) all shipped on `main`.
 
 ## Files
 

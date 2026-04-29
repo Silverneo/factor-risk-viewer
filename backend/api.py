@@ -195,6 +195,43 @@ def _find_weekly_cov_artefact() -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _artefact_size_mb(store) -> float:
+    """Best-effort artefact size in MB. Local files: stat(). Local
+    Zarr directories: sum of all file sizes. Remote (s3://): 0 — we
+    don't probe a HEAD on every chunk just to fill an info field."""
+    p = getattr(store, "path", None)
+    if p is None:
+        return 0.0
+    try:
+        if p.is_file():
+            return p.stat().st_size / (1024 * 1024)
+        if p.is_dir():
+            return sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) / (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0.0
+
+
+def _find_zarr_artefact() -> str | None:
+    """Pick a zarr-style artefact if one is configured. Two env vars,
+    in priority order:
+
+      FRV_WEEKLY_COV_S3_URI = s3://bucket/key/weekly_cov.zarr
+      FRV_WEEKLY_COV_ZARR   = /local/path/weekly_cov.zarr
+
+    Returns the path/URI string, or None if neither is set. Local
+    paths are checked for existence; s3:// URIs are passed through.
+    """
+    s3 = os.environ.get("FRV_WEEKLY_COV_S3_URI")
+    if s3:
+        return s3
+    local = os.environ.get("FRV_WEEKLY_COV_ZARR")
+    if local:
+        if Path(local).exists():
+            return local
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not DB_PATH.exists():
@@ -203,21 +240,40 @@ async def lifespan(app: FastAPI):
 
     # Optional: weekly cov artefact for /api/risk/quadratic. Endpoint
     # 503s if it's missing — the rest of the app still works.
-    artefact = _find_weekly_cov_artefact()
-    if artefact is not None:
+    # Resolution order: explicit Zarr (S3 or local) → npz mmap. The
+    # Zarr path optionally wraps the store in an LRU cache; size in MB
+    # via FRV_LRU_CACHE_MB (default 0 = disabled).
+    zarr_artefact = _find_zarr_artefact()
+    if zarr_artefact is not None:
         try:
-            app.state.weekly_cov = WeeklyCovStore(artefact)
+            from lru_zarr import ZarrWeeklyCovStore  # local import — keeps zarr/s3fs lazy
+            lru_mb = int(os.environ.get("FRV_LRU_CACHE_MB", "0"))
+            app.state.weekly_cov = ZarrWeeklyCovStore(zarr_artefact, lru_mb=lru_mb)
             print(
-                f"[lifespan] loaded weekly cov: {artefact.name}  "
-                f"N={app.state.weekly_cov.n} W={app.state.weekly_cov.w}",
+                f"[lifespan] loaded weekly cov (zarr): {zarr_artefact}  "
+                f"N={app.state.weekly_cov.n} W={app.state.weekly_cov.w}  "
+                f"lru_mb={lru_mb}",
                 flush=True,
             )
-        except Exception as e:  # noqa: BLE001 — log + continue without it
-            print(f"[lifespan] failed to load {artefact.name}: {e}", flush=True)
+        except Exception as e:  # noqa: BLE001 — log + continue
+            print(f"[lifespan] failed to load zarr artefact {zarr_artefact}: {e}", flush=True)
             app.state.weekly_cov = None
     else:
-        app.state.weekly_cov = None
-        print("[lifespan] no weekly cov artefact found; /api/risk/quadratic disabled", flush=True)
+        artefact = _find_weekly_cov_artefact()
+        if artefact is not None:
+            try:
+                app.state.weekly_cov = WeeklyCovStore(artefact)
+                print(
+                    f"[lifespan] loaded weekly cov (npz): {artefact.name}  "
+                    f"N={app.state.weekly_cov.n} W={app.state.weekly_cov.w}",
+                    flush=True,
+                )
+            except Exception as e:  # noqa: BLE001 — log + continue without it
+                print(f"[lifespan] failed to load {artefact.name}: {e}", flush=True)
+                app.state.weekly_cov = None
+        else:
+            app.state.weekly_cov = None
+            print("[lifespan] no weekly cov artefact found; /api/risk/quadratic disabled", flush=True)
 
     yield
     app.state.con.close()
@@ -670,7 +726,7 @@ def get_risk_quadratic_info():
         weeks=[str(d) for d in store.week_dates],
         factor_ids=[str(f) for f in store.factor_ids],
         artefact=store.path.name,
-        artefact_mb=store.path.stat().st_size / (1024 * 1024),
+        artefact_mb=_artefact_size_mb(store),
     )
 
 

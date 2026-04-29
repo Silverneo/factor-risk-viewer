@@ -34,8 +34,11 @@ improving accuracy.
 - **Phase 4**: Zarr-on-S3 simulation. Validates that approx is
   interactive when served from object storage even cross-region;
   full is audit-only over S3 at N=4000.
+- **Phase 5**: LRU chunk cache. Warm queries collapse to ~baseline
+  RAM perf at every storage backend. Wired into the production API
+  via FRV_LRU_CACHE_MB env var.
 
-This report reflects post–Phase-4 numbers throughout.
+This report reflects the latest numbers throughout.
 
 ## Numbers
 
@@ -304,6 +307,73 @@ The Phase 5 real-MinIO numbers refine that:
   cold), not slider fast. Full is audit-only (~20–60 s real cold).
   For interactive at this scale, keep the artefact local or wrap the
   S3 store in an LRU.
+
+## Phase 5 — LRU chunk cache
+
+The N=4000 cold-cache numbers from Phase 4 are too slow for slider-style
+interactivity. The fix is an in-process LRU on top of the zarr store —
+once a week range is fetched, subsequent queries against the same range
+hit RAM and collapse to compute-only.
+
+Implementation: `backend/lru_zarr.py` ships a `LRUWrapperStore`
+(zarr 3 dropped its built-in `LRUStoreCache`) plus a
+`ZarrWeeklyCovStore` that exposes the same interface as the local
+`WeeklyCovStore` but reads from a Zarr group (local or `s3://`).
+`api.py` lifespan picks the Zarr backend whenever
+`FRV_WEEKLY_COV_ZARR` or `FRV_WEEKLY_COV_S3_URI` is set, and
+`FRV_LRU_CACHE_MB` controls cache size.
+
+### Cold/warm at N=1000 (simulator, lru_mb=1024)
+
+Source: [`results/zarr_sim_20260430T041008.csv`](results/zarr_sim_20260430T041008.csv).
+
+| Scenario | Mode | Cold | Warm | Speedup |
+|---|---|---:|---:|---:|
+| zarr-minio_lh | full-stream | 3.27 s | 117 ms | **28×** |
+| zarr-minio_lh | full-bulk | 320 ms | 97 ms | 3.3× |
+| zarr-minio_lh | approx-bulk-k=30 | 65 ms | 15 ms | 4.3× |
+| zarr-aws_inreg | full-stream | 3.78 s | 117 ms | **32×** |
+| zarr-aws_inreg | full-bulk | 277 ms | 93 ms | 3.0× |
+| zarr-aws_inreg | approx-bulk-k=30 | 123 ms | 15 ms | **8.2×** |
+| zarr-aws_xreg | full-stream | 16.6 s | 117 ms | **142×** |
+| zarr-aws_xreg | full-bulk | 1.82 s | 90 ms | 20× |
+| zarr-aws_xreg | approx-bulk-k=30 | 2.40 s | 16 ms | **150×** |
+
+Two patterns:
+
+1. **Warm latency converges across all storage backends.** Once chunks
+   are in RAM the network cost vanishes — a warm `full-bulk` is
+   ~90–117 ms regardless of whether the underlying store is local
+   disk, MinIO localhost, in-region S3, or cross-region S3.
+
+2. **The harder the cold case, the more dramatic the speedup.**
+   Cross-region streaming gets a 142× boost. In-region bulk gets 3×.
+   The LRU is doing its biggest work where you most need it.
+
+### Validated through the production API
+
+Booted the FastAPI service with `FRV_WEEKLY_COV_ZARR=weekly_cov_N500_W104.zarr`
+and `FRV_LRU_CACHE_MB=200`, sent the same exposure twice:
+
+| Mode | Iter 1 (cold) | Iter 2+ (warm) |
+|---|---:|---:|
+| full | 99.8 ms | 32.2 ms |
+| approx-k=100 | 222.2 ms | 18–22 ms |
+
+Same numerical answer (`vol[0]=3.806426` full, `3.805374` approx) on
+every iter — the cache is correct, just faster.
+
+### Practical knob settings
+
+- `FRV_LRU_CACHE_MB` defaults to 0 (cache off). Setting it to a value
+  ≥ artefact size keeps the whole hot dataset hot after the first
+  query. For N=4000 + full-mode + W=104 weeks, that's ~6.5 GB; for
+  approx-mode it's ~160 MB.
+- Eviction is byte-budget, oldest-first. Buffers larger than the
+  budget are passed through uncached (logged via
+  `LRUWrapperStore.stats`).
+- Cache state survives `with_read_only()` clones (zarr's open-mode
+  re-wrapping). Stats accessible via `store.lru_stats()`.
 
 ## What's deployable now
 

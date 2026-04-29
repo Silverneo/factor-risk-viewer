@@ -38,6 +38,8 @@ import numpy as np
 import zarr
 from zarr.storage import LocalStore, WrapperStore
 
+from lru_zarr import LRUWrapperStore
+
 HERE = Path(__file__).resolve().parents[1]
 EXPERIMENT_DIR = HERE.parents[0] / "experiments" / "2026-04-27-on-the-fly-risk"
 RESULTS_DIR = EXPERIMENT_DIR / "results"
@@ -165,8 +167,20 @@ def ensure_zarr(n: int, weeks: int, force: bool = False) -> Path:
     eig_V = npz["eig_V"] if has_eig else None
     eig_D = npz["eig_D"] if has_eig else None
 
+    factor_ids = npz["factor_ids"]
+    week_dates = npz["week_dates"]
+    meta = npz["meta"]
+
     store = LocalStore(str(dst))
     root = zarr.create_group(store=store, overwrite=True)
+
+    # Stash factor_ids / week_dates / meta as group attrs (small, JSON-
+    # encodable lists/ints). Avoids zarr's variable-length string-array
+    # awkwardness, and keeps the small-metadata fetches at one GET.
+    root.attrs["factor_ids"] = [str(f) for f in factor_ids]
+    root.attrs["week_dates"] = [str(d) for d in week_dates]
+    root.attrs["meta"] = [int(x) for x in meta]
+
     # Chunk by week — one chunk per Σ_t. For our access pattern (each
     # query reads a contiguous week range, walks the full N×N) this is
     # the only sensible choice.
@@ -261,6 +275,9 @@ class SimRow:
     fetches: int
     bytes_fetched_mb: float
     network_seconds: float
+    cache_kind: str = ""     # "" | "lru" + iter label
+    cache_hits: int = 0
+    cache_misses: int = 0
 
 
 SCENARIOS = [
@@ -273,7 +290,7 @@ SCENARIOS = [
 
 
 def bench_one(
-    n: int, weeks: int, k: int, iters: int, warmup: int,
+    n: int, weeks: int, k: int, iters: int, warmup: int, lru_mb: int = 0,
 ) -> list[SimRow]:
     npz = np.load(npz_path(n, weeks), allow_pickle=True)
     cov_in_ram = npz["cov_full"]
@@ -324,57 +341,87 @@ def bench_one(
     weeks_slice = slice(0, weeks)
 
     for label, p50, bw in SCENARIOS:
-        store = LatencyStore(LocalStore(str(zpath)), p50_ms=p50, throughput_mbps=bw)
-        root = zarr.open_group(store=store, mode="r")
+        latency = LatencyStore(LocalStore(str(zpath)), p50_ms=p50, throughput_mbps=bw)
+        if lru_mb > 0:
+            cached = LRUWrapperStore(latency, max_bytes=lru_mb * 1024 * 1024)
+            store_for_zarr = cached
+        else:
+            cached = None
+            store_for_zarr = latency
+        root = zarr.open_group(store=store_for_zarr, mode="r")
         cov = root["cov_full"]
         eig_V = root["eig_V"] if has_eig else None
         eig_D = root["eig_D"] if has_eig else None
         scenario = f"zarr-{label}"
+        # When LRU is enabled, label iter 0 cold and iter≥1 warm so the
+        # CSV/summary makes the speedup visible at a glance.
+        cache_kind_for = (lambda i: "warm" if (cached and i > 0) else ("cold" if cached else ""))
 
         # FULL streaming — per-week loop; one fetch per week, one matrix in RAM.
+        if cached is not None:
+            cached.clear_cache()
         for it in range(iters):
             gc.collect()
-            store.reset_counters()
+            latency.reset_counters()
+            if cached is not None:
+                cached.reset_stats()
             t0 = time.perf_counter()
             _ = quadratic_full_streaming(cov, x, weeks_slice)
             elapsed = time.perf_counter() - t0
             rows.append(SimRow(
                 n=n, w=weeks, scenario=scenario, p50_ms=p50, throughput_mbps=bw,
                 mode="full-stream", iter_idx=it, elapsed_s=elapsed,
-                fetches=store.fetches,
-                bytes_fetched_mb=store.bytes_fetched / (1024 * 1024),
-                network_seconds=store.network_seconds,
+                fetches=latency.fetches,
+                bytes_fetched_mb=latency.bytes_fetched / (1024 * 1024),
+                network_seconds=latency.network_seconds,
+                cache_kind=cache_kind_for(it),
+                cache_hits=cached.stats.hits if cached else 0,
+                cache_misses=cached.stats.misses if cached else 0,
             ))
 
         # FULL bulk — single zarr slice, parallel chunk fetch, batched matmul.
+        if cached is not None:
+            cached.clear_cache()
         for it in range(iters):
             gc.collect()
-            store.reset_counters()
+            latency.reset_counters()
+            if cached is not None:
+                cached.reset_stats()
             t0 = time.perf_counter()
             _ = quadratic_full_bulk(cov, x, weeks_slice)
             elapsed = time.perf_counter() - t0
             rows.append(SimRow(
                 n=n, w=weeks, scenario=scenario, p50_ms=p50, throughput_mbps=bw,
                 mode="full-bulk", iter_idx=it, elapsed_s=elapsed,
-                fetches=store.fetches,
-                bytes_fetched_mb=store.bytes_fetched / (1024 * 1024),
-                network_seconds=store.network_seconds,
+                fetches=latency.fetches,
+                bytes_fetched_mb=latency.bytes_fetched / (1024 * 1024),
+                network_seconds=latency.network_seconds,
+                cache_kind=cache_kind_for(it),
+                cache_hits=cached.stats.hits if cached else 0,
+                cache_misses=cached.stats.misses if cached else 0,
             ))
 
         # APPROX bulk — single-slice fetch of (V, D) for the week range.
         if has_eig:
+            if cached is not None:
+                cached.clear_cache()  # reset for clean cold/warm split per mode
             for it in range(iters):
                 gc.collect()
-                store.reset_counters()
+                latency.reset_counters()
+                if cached is not None:
+                    cached.reset_stats()
                 t0 = time.perf_counter()
                 _ = quadratic_approx_bulk(eig_V, eig_D, x, weeks_slice, k=k)
                 elapsed = time.perf_counter() - t0
                 rows.append(SimRow(
                     n=n, w=weeks, scenario=scenario, p50_ms=p50, throughput_mbps=bw,
                     mode=f"approx-bulk-k={k}", iter_idx=it, elapsed_s=elapsed,
-                    fetches=store.fetches,
-                    bytes_fetched_mb=store.bytes_fetched / (1024 * 1024),
-                    network_seconds=store.network_seconds,
+                    fetches=latency.fetches,
+                    bytes_fetched_mb=latency.bytes_fetched / (1024 * 1024),
+                    network_seconds=latency.network_seconds,
+                    cache_kind=cache_kind_for(it),
+                    cache_hits=cached.stats.hits if cached else 0,
+                    cache_misses=cached.stats.misses if cached else 0,
                 ))
 
     return rows
@@ -389,6 +436,9 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=30, help="approx mode k")
     ap.add_argument("--iters", type=int, default=2)
     ap.add_argument("--warmup", type=int, default=1)
+    ap.add_argument("--lru-mb", type=int, default=0,
+                    help="If >0, wrap each scenario's store in an LRU cache of this many MB. "
+                         "iter 0 = cold, iter ≥1 = warm.")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -397,25 +447,27 @@ def main() -> None:
         ts = time.strftime("%Y%m%dT%H%M%S")
         args.out = RESULTS_DIR / f"zarr_sim_{ts}.csv"
 
-    print(f"=== zarr local sim — N={args.n}, W={args.weeks}, k={args.k} ===", flush=True)
-    rows = bench_one(args.n, args.weeks, args.k, args.iters, args.warmup)
+    print(f"=== zarr local sim — N={args.n}, W={args.weeks}, k={args.k}, lru_mb={args.lru_mb} ===", flush=True)
+    rows = bench_one(args.n, args.weeks, args.k, args.iters, args.warmup, args.lru_mb)
 
-    # Aggregate per (scenario, mode) and print.
-    by_key: dict[tuple[str, str], list[SimRow]] = {}
+    # Aggregate per (scenario, mode, cache_kind). With LRU off, all rows
+    # have cache_kind="" — same as before. With LRU on, cold/warm get
+    # separate rows so the speedup is obvious in the summary.
+    by_key: dict[tuple[str, str, str], list[SimRow]] = {}
     for r in rows:
-        by_key.setdefault((r.scenario, r.mode), []).append(r)
+        by_key.setdefault((r.scenario, r.mode, r.cache_kind), []).append(r)
     print("\nsummary (median over iters):")
     print(
-        f"  {'scenario':<22}  {'mode':<14}  {'p50(s)':>8}  {'fetches':>7}  "
-        f"{'MB pulled':>9}  {'net(s)':>7}"
+        f"  {'scenario':<22}  {'mode':<18}  {'cache':<5}  {'p50(s)':>8}  {'fetches':>7}  "
+        f"{'MB pulled':>9}  {'hits':>5}/{'miss':>5}"
     )
-    for (sc, mode), rs in sorted(by_key.items()):
+    for (sc, mode, kind), rs in sorted(by_key.items()):
         ts_ = sorted(r.elapsed_s for r in rs)
         p50 = ts_[len(ts_) // 2]
         rep = rs[len(rs) // 2]
         print(
-            f"  {sc:<22}  {mode:<14}  {p50:>7.3f}s  {rep.fetches:>7}  "
-            f"{rep.bytes_fetched_mb:>8.1f}M  {rep.network_seconds:>6.3f}s",
+            f"  {sc:<22}  {mode:<18}  {kind:<5}  {p50:>7.3f}s  {rep.fetches:>7}  "
+            f"{rep.bytes_fetched_mb:>8.1f}M  {rep.cache_hits:>5}/{rep.cache_misses:>5}",
             flush=True,
         )
 
