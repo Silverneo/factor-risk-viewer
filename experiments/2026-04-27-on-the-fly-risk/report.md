@@ -236,6 +236,17 @@ Source: [`results/zarr_sim_20260430T025443.csv`](results/zarr_sim_20260430T02544
   ranges — warm queries collapse to compute-only (~1 s for full, ~40 ms
   for approx at N=4000).
 
+### Validating against a real S3-compatible server
+
+`backend/bench/zarr_minio_sim.py` exercises the same code path against
+a real MinIO server on localhost (free AGPL binary, no AWS account).
+Setup is in the script's docstring — download `minio.exe`, start the
+server, run the script. The s3fs/aiobotocore round-trip on localhost is
+sub-millisecond, so MinIO numbers should track the simulated
+`zarr-minio_lh` row closely. Larger gaps would indicate something the
+simulator missed (auth round-trips, retry behaviour, async-pool
+scheduling artefacts).
+
 ## What's deployable now
 
 - `backend/build_weekly_cov.py --eig-k 100` builds artefacts with both
