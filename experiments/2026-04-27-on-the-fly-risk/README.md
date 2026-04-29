@@ -5,15 +5,19 @@ N from 500 to 4000) and a user-supplied factor exposure vector x, can we
 compute the per-week systematic variance σ²_t = xᵀ Σ_t x interactively
 (<200 ms end-to-end) as the user edits x?
 
-**Headline finding.** Direct evaluation is interactive up to **N=2000**
-(~800 ms) and unusable at **N=4000** (~18 s, memory-bound). With a
-precomputed per-week eigendecomposition, **k=30 approx is 783× faster
-than full at N=4000 with 0.054 % max relative error** — visually
-indistinguishable. See [report.md](report.md).
+**Headline finding (post Phase-3 einsum fix).** Direct evaluation is
+**interactive at every N tested** — 4 ms at N=500 to 160 ms at N=4000,
+all bandwidth-bound. The earlier "18 s at N=4000" was numpy's
+contraction-path optimiser picking a pathological order for our
+einsum, not the math itself; replacing the call with `(S @ x) · x`
+gave a ~110× speedup. The per-week eigendecomposition (Phase 2) is
+still a useful path because the eig-only artefact is ~40× smaller on
+disk (160 MB vs 6.6 GB at N=4000). See [report.md](report.md).
 
-**Status.** Done — Phase 1 (full-mode endpoint, frontend) and Phase 2
-(per-week eigendecomposition + comparison UI + accuracy bench) are all
-shipped on `main`.
+**Status.** Done — Phase 1 (full-mode endpoint, frontend), Phase 2
+(per-week eigendecomposition + comparison UI + accuracy bench), and
+Phase 3 (einsum bug fix in WeeklyCovStore.quadratic) all shipped on
+`main`.
 
 ## Files
 

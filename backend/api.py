@@ -131,14 +131,29 @@ class WeeklyCovStore:
     ) -> np.ndarray:
         """σ²_t = xᵀ Σ_t x for a contiguous slice of weeks.
 
-        einsum 'i,wij,j->w' goes through BLAS GEMV under the hood (path
-        optimisation collapses the contraction). For very large N a manual
-        loop with explicit np.dot can be marginally faster but einsum has
-        the cleanest code for the bench.
+        Implementation note: an earlier version used
+        `np.einsum('i,wij,j->w', x, S, x, optimize=True)`. Looks clean,
+        runs catastrophically (~110× slower than the right thing) at
+        N≥2000 because numpy's contraction-path optimiser picks a
+        memory-thrashing order for this signature. The "right thing"
+        is two BLAS calls:
+
+          1. y_all = S @ x          → (W, N)   batched GEMV via GEMM
+          2. σ²_t = (y_all · x)_t   → (W,)    row-wise dot
+
+        At N=4000 this hits ~37 GB/s effective, near the DDR4
+        sequential-read peak. See bench/full_mode_profile.py for the
+        comparison and experiments/2026-04-27-on-the-fly-risk/report.md
+        for the numbers.
         """
         end = end_idx if end_idx is not None else self.w
         sub = self.cov_full[start_idx:end]
-        return np.einsum("i,wij,j->w", exposures, sub, exposures, optimize=True)
+        # Match dtype: cov_full is float32, exposures may arrive as float32
+        # already from the endpoint; cast defensively so BLAS doesn't fall
+        # back to a slow mixed-precision path.
+        x = exposures.astype(sub.dtype, copy=False)
+        y_all = sub @ x                                   # (W, N)
+        return (y_all * x).sum(axis=1)                    # (W,)
 
     def quadratic_approx(
         self,

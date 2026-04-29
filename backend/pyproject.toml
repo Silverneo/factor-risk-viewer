@@ -16,4 +16,5 @@ dependencies = [
 dev = [
     "orjson>=3.11.8",
     "pytest>=8.0",
+    "threadpoolctl>=3.6.0",
 ]

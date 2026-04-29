@@ -3,55 +3,83 @@
 ## Headline
 
 For 104 weekly N×N covariance matrices, the **direct** quadratic form
-σ²_t = xᵀ Σ_t x is interactive up to **N=2000** (~800 ms per query) and
-becomes unusable at **N=4000** (~18 s, memory-bound on a 6.6 GB working
-set).
+σ²_t = xᵀ Σ_t x is interactive at every N tested up to N=4000
+(**160 ms per query at N=4000** — the bandwidth wall, not a code wall).
+Interactivity at large N comes from a single fix: replace
+`np.einsum('i,wij,j->w', x, S, x, optimize=True)` with
+`(S @ x) · x` (batched matmul + row-wise dot). einsum's contraction-path
+optimiser picks a memory-thrashing order for this signature; the BLAS
+path runs **~110× faster** at N=4000 with no functional change.
 
-A **per-week eigendecomposition** to top-k components is the right
-production path: at the synthetic model's intrinsic rank (K=30, since
-Σ_t = L_t L_tᵀ + diag, L_t is N×30) it delivers **0.05 % max relative
-error** at every N tested, while running **13× faster at N=500 and 783×
-faster at N=4000**. Setting `k=30` is the sweet spot — going below the
-true rank (k=10) blows error up to ~30 %; going above it (k=50, k=100)
-adds compute without improving accuracy.
+A **per-week eigendecomposition** to top-k components is still useful
+for shrinking the deployed artefact (160 MB vs 6.6 GB at N=4000) and
+gives modest extra speed (~8× over the now-fixed full mode at N=4000,
+not the ~700× that the einsum path implied). At the synthetic model's
+intrinsic rank (K=30) it delivers **0.05 % max relative error** at every
+N tested. Setting `k=30` is the sweet spot — going below the true rank
+(k=10) blows error up to ~30 %; going above it adds compute without
+improving accuracy.
 
-## Phase 1 vs Phase 2
+## Phase 1 vs Phase 2 vs Phase 3
 
-Phase 1 only had a "shared base loadings" approximation, which was a
-useful upper bound on speed but unrealistic for production. Phase 2
-adds a precomputed per-week (V_t, D_t) eigendecomposition stored in
-the artefact, plus a `mode=approx` query path. This report supersedes
-Phase 1's numbers.
+- **Phase 1**: full-mode endpoint + frontend + bench against a
+  "shared base loadings" approximation (a useful upper bound on
+  speed but unrealistic for production).
+- **Phase 2**: precomputed per-week (V_t, D_t) eigendecomposition,
+  `mode=approx` query path with realistic accuracy numbers.
+- **Phase 3**: full-mode einsum bug fix. ~110× speedup at N=4000.
+  Approx mode's relative advantage shrinks but the eig precompute is
+  still worthwhile because the eig-only artefact is ~40× smaller on
+  disk.
+
+This report reflects post–Phase-3 numbers throughout.
 
 ## Numbers
 
 Bench machine: Windows 11, single-process Python 3.11, NumPy 2.4 with
 default BLAS. 5 iterations after 1 warm-up, median latency reported.
 
-Source CSV: [`results/quadratic_bench_20260428T085112.csv`](results/quadratic_bench_20260428T085112.csv).
+Source CSV: [`results/quadratic_bench_20260429T091717.csv`](results/quadratic_bench_20260429T091717.csv)
+(post Phase-3 fix; pre-Phase-3 numbers in
+[`quadratic_bench_20260428T085112.csv`](results/quadratic_bench_20260428T085112.csv)
+for the historical record).
 
-### Latency
+### Latency (post Phase-3 fix)
 
 | N    | W   | Mode                  | p50 (ms)   | min (ms)   | speedup vs full |
 |-----:|----:|-----------------------|-----------:|-----------:|----------------:|
-| 500  | 104 | full                  |     30.6   |     30.4   |  1× (baseline)  |
-| 500  | 104 | approx-eig k=10       |      1.61  |      1.45  |          ~19×   |
-| 500  | 104 | approx-eig k=30       |      2.41  |      2.32  |          ~13×   |
-| 500  | 104 | approx-eig k=50       |      3.00  |      2.97  |          ~10×   |
-| 500  | 104 | approx-eig k=100      |      4.97  |      4.94  |           ~6×   |
-| 1000 | 104 | full                  |    129.9   |    129.4   |  1×             |
-| 1000 | 104 | approx-eig k=10       |      2.72  |      2.69  |          ~48×   |
-| 1000 | 104 | approx-eig k=30       |      4.15  |      4.12  |          ~31×   |
-| 1000 | 104 | approx-eig k=100      |      9.80  |      9.66  |          ~13×   |
-| 2000 | 104 | full                  |    820.0   |    791.0   |  1×             |
-| 2000 | 104 | approx-eig k=10       |      8.37  |      8.19  |          ~98×   |
-| 2000 | 104 | approx-eig k=30       |     11.28  |     11.04  |          ~73×   |
-| 2000 | 104 | approx-eig k=100      |     23.07  |     22.21  |          ~36×   |
-| 4000 | 104 | full                  | 18 002.8   | 16 174.3   |  1×             |
-| 4000 | 104 | approx-eig k=10       |     16.18  |     15.53  |       ~1 113×   |
-| 4000 | 104 | approx-eig k=30       |     23.02  |     22.22  |       **~783×** |
-| 4000 | 104 | approx-eig k=50       |     29.28  |     28.87  |         ~614×   |
-| 4000 | 104 | approx-eig k=100      |     46.10  |     45.06  |         ~390×   |
+| 500  | 104 | full                  |      3.80  |      3.73  |  1× (baseline)  |
+| 500  | 104 | approx-eig k=10       |      1.71  |      1.70  |          ~2.2×  |
+| 500  | 104 | approx-eig k=30       |      2.39  |      2.33  |          ~1.6×  |
+| 500  | 104 | approx-eig k=100      |      5.34  |      5.22  |        ~0.7×    |
+| 1000 | 104 | full                  |     12.07  |     12.02  |  1×             |
+| 1000 | 104 | approx-eig k=10       |      2.58  |      2.46  |          ~4.7×  |
+| 1000 | 104 | approx-eig k=30       |      4.29  |      4.22  |          ~2.8×  |
+| 1000 | 104 | approx-eig k=100      |      9.94  |      9.85  |          ~1.2×  |
+| 2000 | 104 | full                  |     33.13  |     31.91  |  1×             |
+| 2000 | 104 | approx-eig k=10       |      4.98  |      4.83  |          ~6.6×  |
+| 2000 | 104 | approx-eig k=30       |      8.18  |      8.06  |          ~4.0×  |
+| 2000 | 104 | approx-eig k=100      |     19.89  |     19.64  |          ~1.7×  |
+| 4000 | 104 | full                  |    160.00  |    156.96  |  1×             |
+| 4000 | 104 | approx-eig k=10       |     12.54  |     12.41  |         ~12.8×  |
+| 4000 | 104 | approx-eig k=30       |     20.47  |     19.43  |         **~7.8×** |
+| 4000 | 104 | approx-eig k=50       |     31.37  |     29.81  |          ~5.1×  |
+| 4000 | 104 | approx-eig k=100      |     49.43  |     42.24  |          ~3.2×  |
+
+#### What Phase-3 changed
+
+The full-mode column above is roughly two orders of magnitude better
+than what the same code reported in Phase 2:
+
+| N    | full p50 pre-fix | full p50 post-fix | speedup | bandwidth (post) |
+|-----:|------------------:|-------------------:|--------:|-----------------:|
+| 500  |        30.6 ms    |          3.8 ms    |  ~8×    |   28 GB/s        |
+| 1000 |       129.9 ms    |         12.1 ms    | ~11×    |   34 GB/s        |
+| 2000 |       820.0 ms    |         33.1 ms    | ~25×    |   47 GB/s        |
+| 4000 |    18 003   ms    |        160.0 ms    | ~113×   |   37 GB/s        |
+
+The post-fix bandwidth is at or near peak DDR4 sequential — full mode is
+now genuinely memory-bound, no algorithmic headroom left on CPU.
 
 ### Accuracy (max relative error vs full mode)
 
@@ -94,22 +122,28 @@ The eig arrays themselves are tiny — at N=4000, 104 weeks × 4000 × 100
 
 For a production deployment of this app:
 
-1. **Default to `mode=approx` with `k = K_macro_factors`** (e.g. k=30 for
-   our synthetic model; tune empirically for real data — pick the
-   smallest k that recovers ≥ 99 % of variance per week).
+1. **`mode=full` is interactive at every N tested** post Phase-3. If
+   your storage can hold `cov_full` (local disk or on-demand S3
+   stream), that's the simplest path — exact answers, ~160 ms at
+   N=4000, no precompute step.
 
-2. **Drop `cov_full` from the deployed artefact** — keep only the eig
-   arrays. That shrinks the artefact from ~6.6 GB to ~160 MB at
-   N=4000, fits in any backend host's RAM, and eliminates the
-   memory-bound penalty.
+2. **`mode=approx` is still the win when storage is the constraint.**
+   The eig-only artefact is ~160 MB at N=4000 vs ~6.6 GB for cov_full —
+   ~40× smaller. That matters for serverless / Lambda / Vercel-style
+   deploys with small ephemeral disk, or when you want to colocate
+   many tenants' artefacts in RAM. Default `k = K_macro_factors`
+   (e.g. k=30 for our synthetic model — pick the smallest k that
+   recovers ≥ 99 % of variance on real data).
 
-3. **Keep `mode=full` available as an off-by-default audit path** —
-   useful for spot-checking the approximation on demand, not for the
-   hot interactive loop.
-
-4. **Don't ship the shared-loadings shortcut.** It looks fast but loses
+3. **Don't ship the shared-loadings shortcut.** It looks fast but loses
    3 % accuracy; the per-week eig path is just as cheap (per query)
    and 50–100× more accurate.
+
+4. **Profile your einsum calls.** If anything in the codebase still
+   uses `np.einsum(... optimize=True)` on a 3-tensor contraction with
+   shape (W, N, N) at large N, replace it with explicit batched
+   matmul. The 110× we recovered here was a one-line code change with
+   identical numerics.
 
 ## What this experiment did NOT test
 

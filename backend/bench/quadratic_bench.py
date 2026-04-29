@@ -118,20 +118,29 @@ def _max_rel_err(approx_vol: np.ndarray, full_vol: np.ndarray) -> float:
     return float(np.max(np.abs(approx_vol[mask] - full_vol[mask]) / np.abs(full_vol[mask])))
 
 
+def _full_quadratic(S: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """xᵀ Σ_t x via batched matmul + row-wise dot. This matches the
+    backend's WeeklyCovStore.quadratic implementation; see api.py for the
+    note on why this beats `np.einsum('i,wij,j->w', ...)` by ~100× at
+    large N."""
+    y_all = S @ x                       # (W, N)
+    return (y_all * x).sum(axis=1)      # (W,)
+
+
 def bench_full(cov_full: np.ndarray, x: np.ndarray, iters: int, warmup: int) -> tuple[list[BenchRow], np.ndarray]:
-    """Benchmark x^T Σ_t x via einsum across all weeks. Also returns the
-    full-mode vol vector so the approx benches can compute relative error
-    against it."""
+    """Benchmark x^T Σ_t x via batched matmul across all weeks. Also
+    returns the full-mode vol vector so the approx benches can compute
+    relative error against it."""
     w = cov_full.shape[0]
     n = cov_full.shape[1]
     rows: list[BenchRow] = []
     full_vol: np.ndarray | None = None
     for _ in range(warmup):
-        _ = np.einsum("i,wij,j->w", x, cov_full, x, optimize=True)
+        _ = _full_quadratic(cov_full, x)
     for k in range(iters):
         gc.collect()
         t0 = time.perf_counter()
-        var = np.einsum("i,wij,j->w", x, cov_full, x, optimize=True)
+        var = _full_quadratic(cov_full, x)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         var_clamped = np.clip(var, 0.0, None)
         vol = np.sqrt(var_clamped)

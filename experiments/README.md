@@ -8,7 +8,7 @@ Self-contained records of investigations that informed (or could inform) decisio
 |------|------------|------------------|
 | 2026-04-26 | [Covariance payload formats](2026-04-26-covariance-payload-formats/) | List-of-dict JSON hard-fails in Chrome at 6.5M cells (V8 string-length ceiling). Arrow IPC wins comprehensively on every axis at large sizes. |
 | 2026-04-27 | [Charts experiment](2026-04-27-charts-experiment/) | Seven hierarchical / comparative / temporal chart variants for the same risk data, all driven by existing endpoints. Hand-rolled SVG layouts (squarify + partition) avoid AG Charts Enterprise. |
-| 2026-04-27 | [On-the-fly risk over weekly history](2026-04-27-on-the-fly-risk/) | Direct `xᵀ Σ_t x` is interactive ≤ N=2000 but unusable at N=4000 (~18 s, memory-bound). With a precomputed per-week eigendecomposition, k=30 approx is **783× faster than full at N=4000 with 0.054 % max relative error**. Drop full Σ_t from the deployed artefact and ship only the eig arrays (~160 MB at N=4000 vs ~6.6 GB). |
+| 2026-04-27 | [On-the-fly risk over weekly history](2026-04-27-on-the-fly-risk/) | Direct `xᵀ Σ_t x` is interactive at every N tested (160 ms at N=4000, bandwidth-bound). The earlier "18 s at N=4000" was a `np.einsum(... optimize=True)` pathology — replacing with `(S @ x) · x` gave a ~110× speedup with identical numerics. Per-week eigendecomposition is still useful for shrinking the deployed artefact ~40× (160 MB vs 6.6 GB at N=4000). |
 
 ## Folder convention
 
