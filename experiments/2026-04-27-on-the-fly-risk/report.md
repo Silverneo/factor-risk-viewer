@@ -243,29 +243,48 @@ a real MinIO server on localhost (free AGPL binary, no AWS account).
 Setup is in the script's docstring — download `minio.exe`, start the
 server, run the script.
 
-Result at N=1000, W=104:
+Results at N=1000 and N=4000, W=104:
 
-| Mode | Sim `zarr-minio_lh` | Real MinIO | Ratio |
-|---|---:|---:|---:|
-| full-stream | 3 337 ms | 4 388 ms | 1.3× |
-| full-bulk | 290 ms | 995 ms | 3.4× |
-| approx-bulk-k=30 | 113 ms | 493 ms | 4.4× |
+| N | Mode | Sim `zarr-minio_lh` | Real MinIO | Ratio |
+|---:|---|---:|---:|---:|
+| 1000 | full-stream | 3 337 ms | 4 388 ms | 1.3× |
+| 1000 | full-bulk | 290 ms | 995 ms | 3.4× |
+| 1000 | approx-bulk-k=30 | 113 ms | 493 ms | 4.4× |
+| 4000 | full-stream | 13 716 ms | 22 326 ms | 1.6× |
+| 4000 | full-bulk | 5 691 ms | **19 845 ms** | **3.5×** |
+| 4000 | approx-bulk-k=30 | 150 ms | **1 189 ms** | **7.9×** |
 
-Source: [`results/zarr_minio_20260430T033653.csv`](results/zarr_minio_20260430T033653.csv).
+Sources: [`results/zarr_minio_20260430T033653.csv`](results/zarr_minio_20260430T033653.csv) (N=1000),
+[`results/zarr_minio_20260430T034251.csv`](results/zarr_minio_20260430T034251.csv) (N=4000).
 
-The simulator was optimistic by 1.3–4.4× — the gap is what `boto3 +
-aiobotocore` adds on top of raw network: connection-pool warm-up,
-per-request signing, async-scheduler overhead. The *shape* of the
-curve (stream slow, bulk fast, approx fastest) is the same; magnitudes
-need a multiplier. Practical reading:
+Two findings worth pulling out:
 
-- **Multiply the simulator's `zarr-minio_lh` numbers by ~3–4×** when
-  estimating real S3 + AWS-SDK behaviour. So the projected N=4000
-  full-bulk in-region (6.4 s simulated) is more like 20–25 s in
-  practice; approx-bulk (170 ms) is more like 600–800 ms.
-- The **streaming variant degrades less** in real-world conditions
-  because per-fetch overheads were already its dominant cost in the
-  simulator.
+1. **The simulator's optimism widens with N.** The 3–4× multiplier
+   that fit at N=1000 grows to 7–8× for `approx-bulk` at N=4000. Per-
+   chunk SDK overhead (signing, async dispatch, decode-to-numpy) is
+   roughly fixed-cost per chunk; the simulated bandwidth model didn't
+   capture it.
+
+2. **Bulk parallelism collapses at large per-chunk sizes.** At N=4000
+   each chunk is 64 MB — large enough that fetching just one already
+   saturates localhost throughput. Concurrent fetches end up sharing
+   the same pipe, so `full-bulk` (20 s) is barely faster than
+   `full-stream` (22 s). The bulk-vs-stream advantage was real at
+   N≤2000 where chunks were small (≤16 MB); it shrinks toward 1× as
+   chunks get big.
+
+Practical reading for AWS S3 in-region (~5 ms FB, similar throughput):
+
+| N | mode=approx | mode=full |
+|---:|:---|:---|
+| 1000 | ~1.5 s cold | ~3 s cold |
+| 4000 | **~3–6 s cold** | **~30–60 s cold** |
+
+So at **N=4000 over real S3, even `mode=approx` is "compute-button"
+territory, not slider-fast.** For genuinely interactive UIs at large
+N, you need either (a) an LRU on top of the S3 store so warm queries
+collapse to compute-only (~40 ms), (b) smaller N, or (c) keep the
+artefact local instead of remote.
 
 Implementation note: `s3fs.S3FileSystem` must be constructed with
 `asynchronous=True` when handing it to zarr's `FsspecStore`. Without
@@ -273,6 +292,18 @@ it zarr's internal event loop and aiobotocore's loop conflict, raising
 `Future attached to a different loop`. The script handles this — keep
 the sync fs for the upload + bucket-create path, use the async fs
 inside zarr.
+
+### What changed about the recommendation
+
+The Phase 4 sim numbers led to "approx interactive at every latency".
+The Phase 5 real-MinIO numbers refine that:
+
+- **N ≤ 1000**: approx is interactive over S3 in or out of region
+  (≤ 0.5 s real cold). Full is interactive in-region (~1 s real cold).
+- **N = 4000**: approx is **compute-button fast** over S3 (~1–6 s real
+  cold), not slider fast. Full is audit-only (~20–60 s real cold).
+  For interactive at this scale, keep the artefact local or wrap the
+  S3 store in an LRU.
 
 ## What's deployable now
 

@@ -1,0 +1,4 @@
+n,w,scenario,mode,iter_idx,elapsed_s
+4000,104,minio-real,full-stream,0,22.326242500101216
+4000,104,minio-real,full-bulk,0,19.844694600091316
+4000,104,minio-real,approx-bulk-k=30,0,1.1891648999881
