@@ -315,13 +315,37 @@ interactivity. The fix is an in-process LRU on top of the zarr store —
 once a week range is fetched, subsequent queries against the same range
 hit RAM and collapse to compute-only.
 
-Implementation: `backend/lru_zarr.py` ships a `LRUWrapperStore`
-(zarr 3 dropped its built-in `LRUStoreCache`) plus a
-`ZarrWeeklyCovStore` that exposes the same interface as the local
-`WeeklyCovStore` but reads from a Zarr group (local or `s3://`).
-`api.py` lifespan picks the Zarr backend whenever
-`FRV_WEEKLY_COV_ZARR` or `FRV_WEEKLY_COV_S3_URI` is set, and
-`FRV_LRU_CACHE_MB` controls cache size.
+**Two implementations, A/B'd against MinIO:**
+
+1. **`zarr.experimental.cache_store.CacheStore`** (the official one).
+   It's in the `experimental` namespace which is why it didn't show up
+   in `dir(zarr.storage)` initially — but it's there, fully functional,
+   and supported by the zarr team. `CacheStore(store, cache_store=…,
+   max_size=…)` takes a separate Store as the cache backend (typically
+   `MemoryStore()`), supports TTL, exposes `cache_stats()` and
+   `cache_info()`. **Production default.**
+2. **`backend/lru_zarr.py:LRUWrapperStore`** (homemade). Kept around
+   for educational A/B comparison. Numerically identical performance
+   to the official; toss it if it ever gets in the way.
+
+A/B at N=1000 against real MinIO localhost, 1 GB cache, 3 iters:
+
+| Mode | Homemade cold | Homemade warm | Official cold | Official warm |
+|---|---:|---:|---:|---:|
+| approx-bulk-k=30 | 488 ms | 16 ms | 492 ms | 16 ms |
+| full-bulk | 1 029 ms | 89 ms | 964 ms | 88 ms |
+| full-stream | 3 857 ms | 122 ms | 3 658 ms | 121 ms |
+
+Within run-to-run noise. `api.py` defaults to `cache=official`;
+`FRV_CACHE_IMPL=homemade` swaps in the home-rolled one if you want
+to compare in your environment.
+
+**Common interface:** `ZarrWeeklyCovStore` exposes the same hot-path
+methods as the local `WeeklyCovStore` (`quadratic`, `quadratic_approx`)
+and reads from a Zarr group (local or `s3://`). `api.py` lifespan
+picks the Zarr backend whenever `FRV_WEEKLY_COV_ZARR` or
+`FRV_WEEKLY_COV_S3_URI` is set; `FRV_LRU_CACHE_MB` controls cache
+size; `FRV_CACHE_IMPL` (default `official`) chooses the cache impl.
 
 ### Cold/warm at N=1000 (simulator, lru_mb=1024)
 

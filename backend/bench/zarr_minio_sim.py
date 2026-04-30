@@ -157,17 +157,30 @@ def _ensure_artefact_in_minio(
 
 def _open_remote_group(
     fs: s3fs.S3FileSystem, s3_prefix: str, lru_mb: int = 0,
-) -> tuple[zarr.Group, LRUWrapperStore | None]:
-    """Open the remote Zarr group via FsspecStore. Optionally wraps
-    the store in an LRU chunk cache so warm queries can be measured."""
+    cache_impl: str = "homemade",
+) -> tuple[zarr.Group, "object | None", str]:
+    """Open the remote Zarr group via FsspecStore. Optionally wrap the
+    store in a cache (homemade LRUWrapperStore or zarr's experimental
+    CacheStore) so warm queries can be measured.
+
+    Returns (group, cache_handle_or_None, kind_label).
+    """
     store = FsspecStore(fs, path=s3_prefix)
-    cached: LRUWrapperStore | None = None
-    if lru_mb > 0:
-        cached = LRUWrapperStore(store, max_bytes=lru_mb * 1024 * 1024)
-        store_for_zarr = cached
+    if lru_mb <= 0:
+        return zarr.open_group(store=store, mode="r"), None, "none"
+
+    max_bytes = lru_mb * 1024 * 1024
+    if cache_impl == "homemade":
+        wrapped = LRUWrapperStore(store, max_bytes=max_bytes)
+        return zarr.open_group(store=wrapped, mode="r"), wrapped, "homemade"
+    elif cache_impl == "official":
+        from zarr.experimental.cache_store import CacheStore
+        from zarr.storage import MemoryStore
+        cb = MemoryStore()
+        wrapped = CacheStore(store=store, cache_store=cb, max_size=max_bytes)
+        return zarr.open_group(store=wrapped, mode="r"), wrapped, "official"
     else:
-        store_for_zarr = store
-    return zarr.open_group(store=store_for_zarr, mode="r"), cached
+        raise ValueError(f"unknown cache_impl: {cache_impl!r}")
 
 
 def bench_minio(
@@ -179,8 +192,10 @@ def bench_minio(
     fs: s3fs.S3FileSystem,
     s3_prefix: str,
     lru_mb: int = 0,
+    cache_impl: str = "homemade",
 ) -> list[MinioRow]:
-    root, cached = _open_remote_group(fs, s3_prefix, lru_mb=lru_mb)
+    root, cached, cache_label = _open_remote_group(fs, s3_prefix, lru_mb=lru_mb, cache_impl=cache_impl)
+    print(f"  cache: {cache_label}", flush=True)
     cov = root["cov_full"]
     has_eig = "eig_V" in [str(p).split("/")[-1] for p in root]
     eig_V = root["eig_V"] if has_eig else None
@@ -197,31 +212,49 @@ def bench_minio(
             return ""
         return "warm" if it > 0 else "cold"
 
+    # Polymorphic stats accessor — works for both LRUWrapperStore (`stats.hits`)
+    # and zarr's CacheStore (`cache_stats()['hits']`).
+    def get_stats() -> tuple[int, int]:
+        if cached is None:
+            return 0, 0
+        if hasattr(cached, "cache_stats"):  # official CacheStore
+            s = cached.cache_stats()
+            return int(s.get("hits", 0)), int(s.get("misses", 0))
+        s = cached.stats
+        return int(s.hits), int(s.misses)
+
+    def _clear() -> None:
+        if cached is None:
+            return
+        result = cached.clear_cache()
+        # The official CacheStore's clear_cache is async; ours is sync.
+        if hasattr(result, "__await__"):
+            from zarr.core.sync import sync as zarr_sync  # noqa: PLC0415
+            zarr_sync(result)
+
     def time_it(fn, mode: str) -> None:
-        # When LRU is on, clear the cache before this mode's first iter
-        # so the cold/warm split is honest.
-        if cached is not None:
-            cached.clear_cache()
+        _clear()
         for _ in range(warmup):
             _ = fn()
-        # If we ran warmup and LRU is on, that already populated the
-        # cache — re-clear so iter 0 is genuinely cold.
-        if cached is not None and warmup > 0:
-            cached.clear_cache()
+        if warmup > 0:
+            _clear()
+        # Capture pre-iter stats so we can record per-iter deltas (the
+        # official CacheStore doesn't expose a reset; we just diff).
+        prev_hits, prev_misses = get_stats()
         for it in range(iters):
             gc.collect()
-            if cached is not None:
-                cached.reset_stats()
             t0 = time.perf_counter()
             _ = fn()
             elapsed = time.perf_counter() - t0
+            cur_hits, cur_misses = get_stats()
             rows.append(MinioRow(
                 n=n, w=weeks, scenario="minio-real", mode=mode,
                 iter_idx=it, elapsed_s=elapsed,
                 cache_kind=kind_for(it),
-                cache_hits=cached.stats.hits if cached else 0,
-                cache_misses=cached.stats.misses if cached else 0,
+                cache_hits=cur_hits - prev_hits,
+                cache_misses=cur_misses - prev_misses,
             ))
+            prev_hits, prev_misses = cur_hits, cur_misses
             tag = f" [{kind_for(it)}]" if cached else ""
             print(f"  {mode:<22}  iter {it}{tag}  {elapsed * 1000:>9.1f} ms", flush=True)
 
@@ -256,6 +289,9 @@ def main() -> None:
     ap.add_argument("--lru-mb", type=int, default=0,
                     help="If >0, wrap the FsspecStore in an LRU chunk cache of this many MB. "
                          "iter 0 = cold, iter >=1 = warm.")
+    ap.add_argument("--cache", choices=["homemade", "official"], default="homemade",
+                    help="Which cache impl to use. 'homemade' = backend/lru_zarr.py LRUWrapperStore. "
+                         "'official' = zarr.experimental.cache_store.CacheStore over a MemoryStore.")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -280,7 +316,8 @@ def main() -> None:
 
     # zarr needs the async-mode fs.
     rows = bench_minio(args.n, args.weeks, args.k, args.iters, args.warmup,
-                       fs_async, s3_prefix, lru_mb=args.lru_mb)
+                       fs_async, s3_prefix,
+                       lru_mb=args.lru_mb, cache_impl=args.cache)
 
     # Per (mode, cache_kind) median summary so cold/warm are visible.
     by_key: dict[tuple[str, str], list[MinioRow]] = {}

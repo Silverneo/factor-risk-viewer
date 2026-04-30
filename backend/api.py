@@ -248,11 +248,14 @@ async def lifespan(app: FastAPI):
         try:
             from lru_zarr import ZarrWeeklyCovStore  # local import — keeps zarr/s3fs lazy
             lru_mb = int(os.environ.get("FRV_LRU_CACHE_MB", "0"))
-            app.state.weekly_cov = ZarrWeeklyCovStore(zarr_artefact, lru_mb=lru_mb)
+            cache_impl = os.environ.get("FRV_CACHE_IMPL", "official")
+            app.state.weekly_cov = ZarrWeeklyCovStore(
+                zarr_artefact, lru_mb=lru_mb, cache_impl=cache_impl,
+            )
             print(
                 f"[lifespan] loaded weekly cov (zarr): {zarr_artefact}  "
                 f"N={app.state.weekly_cov.n} W={app.state.weekly_cov.w}  "
-                f"lru_mb={lru_mb}",
+                f"lru_mb={lru_mb} cache={cache_impl}",
                 flush=True,
             )
         except Exception as e:  # noqa: BLE001 — log + continue

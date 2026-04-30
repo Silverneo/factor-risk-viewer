@@ -170,12 +170,19 @@ def _import_zarr() -> Any:
     return zarr
 
 
-def _open_zarr_store(path_or_uri: str, lru_mb: int):
-    """Open the right kind of zarr store based on the artefact location.
-    Returns (zarr_group, lru_wrapper_or_None).
+def _open_zarr_store(path_or_uri: str, lru_mb: int, cache_impl: str = "official"):
+    """Open the right kind of zarr store based on the artefact location,
+    optionally wrapped in a chunk cache. Returns (zarr_group, cache_or_None).
 
       file://… or plain path  → LocalStore
       s3://bucket/key          → FsspecStore over async s3fs
+
+    cache_impl:
+      "official" (default) — zarr.experimental.cache_store.CacheStore over
+        a MemoryStore. Stable, supported by the zarr team.
+      "homemade" — backend/lru_zarr.py LRUWrapperStore. Kept for
+        comparison / education; numerically equivalent to the official
+        in our bench (see report Phase 5).
     """
     zarr = _import_zarr()
     from zarr.storage import LocalStore, FsspecStore  # noqa: PLC0415
@@ -202,10 +209,19 @@ def _open_zarr_store(path_or_uri: str, lru_mb: int):
             raise FileNotFoundError(f"zarr artefact not found: {local_path}")
         store = LocalStore(str(local_path))
 
-    cached: LRUWrapperStore | None = None
+    cached: Any = None
     if lru_mb > 0:
-        cached = LRUWrapperStore(store, max_bytes=lru_mb * 1024 * 1024)
-        store = cached
+        max_bytes = lru_mb * 1024 * 1024
+        if cache_impl == "official":
+            from zarr.experimental.cache_store import CacheStore  # noqa: PLC0415
+            from zarr.storage import MemoryStore  # noqa: PLC0415
+            cached = CacheStore(store=store, cache_store=MemoryStore(), max_size=max_bytes)
+            store = cached
+        elif cache_impl == "homemade":
+            cached = LRUWrapperStore(store, max_bytes=max_bytes)
+            store = cached
+        else:
+            raise ValueError(f"unknown cache_impl: {cache_impl!r}")
 
     group = zarr.open_group(store=store, mode="r")
     return group, cached
@@ -228,10 +244,11 @@ class ZarrWeeklyCovStore:
     network cost once, warm queries match local mmap perf.
     """
 
-    def __init__(self, path_or_uri: str, lru_mb: int = 0) -> None:
+    def __init__(self, path_or_uri: str, lru_mb: int = 0, cache_impl: str = "official") -> None:
         self.path_or_uri = path_or_uri
         self.lru_mb = lru_mb
-        group, cached = _open_zarr_store(path_or_uri, lru_mb)
+        self.cache_impl = cache_impl
+        group, cached = _open_zarr_store(path_or_uri, lru_mb, cache_impl)
         self._group = group
         self._cache = cached
         self.cov_full = group["cov_full"]
@@ -307,9 +324,13 @@ class ZarrWeeklyCovStore:
         y = np.einsum("wnk,n->wk", V, exposures, optimize=True)
         return np.einsum("wk,wk->w", D, y * y, optimize=True)
 
-    def lru_stats(self) -> dict[str, int]:
+    def lru_stats(self) -> dict[str, Any]:
+        """Polymorphic stats accessor — works for both
+        LRUWrapperStore (.stats) and CacheStore (.cache_stats())."""
         if self._cache is None:
             return {}
+        if hasattr(self._cache, "cache_stats"):
+            return dict(self._cache.cache_stats())
         s = self._cache.stats
         return {
             "hits": s.hits,
