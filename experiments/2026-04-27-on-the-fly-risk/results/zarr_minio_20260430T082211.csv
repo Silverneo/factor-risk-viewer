@@ -1,0 +1,10 @@
+n,w,scenario,mode,iter_idx,elapsed_s,cache_kind,cache_hits,cache_misses
+1000,104,minio-real,full-stream,0,3.066860399907455,cold,0,104
+1000,104,minio-real,full-stream,1,0.24365359998773783,warm,104,0
+1000,104,minio-real,full-stream,2,0.23432689998298883,warm,104,0
+1000,104,minio-real,full-bulk,0,1.8718836000189185,cold,0,104
+1000,104,minio-real,full-bulk,1,0.15293420001398772,warm,104,0
+1000,104,minio-real,full-bulk,2,0.1557084999512881,warm,104,0
+1000,104,minio-real,approx-bulk-k=30,0,0.884305200073868,cold,0,208
+1000,104,minio-real,approx-bulk-k=30,1,0.02379749994724989,warm,208,0
+1000,104,minio-real,approx-bulk-k=30,2,0.02533410000614822,warm,208,0

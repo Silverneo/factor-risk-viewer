@@ -363,6 +363,50 @@ and `FRV_LRU_CACHE_MB=200`, sent the same exposure twice:
 Same numerical answer (`vol[0]=3.806426` full, `3.805374` approx) on
 every iter — the cache is correct, just faster.
 
+### Real MinIO with LRU at N=4000 — a wrinkle
+
+Re-ran `zarr_minio_sim` against MinIO localhost with `--lru-mb 7168`
+at N=4000 (3 iters, no warmup so iter 0 is cold and iter ≥1 is warm):
+
+| Mode | Cold | Warm best | In-RAM baseline | Speedup vs cold |
+|---|---:|---:|---:|---:|
+| approx-bulk-k=30 | 1 338 ms | **53 ms** | 37 ms | **25×** |
+| full-stream | 27 491 ms | 2 429 ms | — | 11× |
+| full-bulk | 30 647 ms | 9 389 ms | 1 167 ms | 3.3× |
+
+Source: [`results/zarr_minio_20260430T082352.csv`](results/zarr_minio_20260430T082352.csv).
+
+Two surprises:
+
+**1. Warm `full-bulk` is far slower than warm `full-stream`.** The LRU
+caches the raw `Buffer` objects zarr fetched, *not* the decoded
+ndarray. Every warm `full-bulk` still memcopies 104 × 64 MB = 6.6 GB
+from buffer → contiguous ndarray, plus pays zarr's per-chunk decode
+dispatch over 100+ chunks at once. `full-stream` does it one chunk at
+a time so the dispatcher overhead is smaller per iteration; the
+counter-intuitive result is that streaming wins on warm at huge per-
+chunk sizes.
+
+**2. The LRU doesn't quite collapse to in-RAM perf for `full` at
+N=4000.** Warm `full-bulk` is 9.4 s vs the 1.17 s in-RAM baseline —
+8× slower than ideal because of decode + copy overhead. For
+`approx-bulk-k=30` the chunks are ~1.5 MB each, decode is cheap, and
+warm 53 ms ≈ in-RAM 37 ms.
+
+**Practical implication.** At very large per-chunk sizes (≥ 64 MB,
+i.e. N ≥ 4000), `LRUWrapperStore` is the right thing for the cold
+path but doesn't fully eliminate per-query work on the warm path.
+Two next steps if you need warm = in-RAM at that scale:
+
+- Cache decoded ndarrays at a higher layer (one cache entry per
+  `(arr_name, week_range)` keyed slice), or
+- Materialise the full array on first query and keep the ndarray
+  pinned in process memory (effectively `np.asarray(zarr_arr[:])`
+  once, then reuse).
+
+For `mode=approx`, no further work needed — warm is already
+~baseline.
+
 ### Practical knob settings
 
 - `FRV_LRU_CACHE_MB` defaults to 0 (cache off). Setting it to a value
