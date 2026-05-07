@@ -1,0 +1,23 @@
+phase,dtype,path,p50_ms,bytes,note
+compute,float32,all-numpy,13.89,,baseline
+compute,float32,all-pandas-aligned,17.69,,1.27x numpy
+compute,float32,pandas-to-numpy-boundary,13.46,,0.97x numpy
+compute,float32,pandas-misaligned-index,23.02,,1.66x numpy (forces reindex)
+compute,float64,all-numpy,23.43,,baseline
+compute,float64,all-pandas-aligned,36.07,,1.54x numpy
+compute,float64,pandas-to-numpy-boundary,26.15,,1.12x numpy
+compute,float64,pandas-misaligned-index,46.49,,1.98x numpy (forces reindex)
+read,float32,parquet-to-numpy-column-stack,439.67,53625088,pq.read_table + np.column_stack
+read,float32,parquet-to-pandas,115.70,53625088,pd.read_parquet
+read,float32,parquet-to-pandas-then-numpy,117.41,53625088,pd.read_parquet().to_numpy()
+read,float64,parquet-to-numpy-column-stack,440.69,91428272,pq.read_table + np.column_stack
+read,float64,parquet-to-pandas,123.58,91428272,pd.read_parquet
+read,float64,parquet-to-pandas-then-numpy,118.20,91428272,pd.read_parquet().to_numpy()
+write,float32,numpy-to-parquet-column-by-column,509.6,52766432,pa.table column-per-factor
+write,float32,pandas-to-parquet,643.9,53625088,df.to_parquet engine=pyarrow snappy
+write,float32,pandas-to-feather,193.0,37222842,df.to_feather Arrow IPC
+write,float32,pandas-to-pickle,11.9,36130538,df.to_pickle
+write,float64,numpy-to-parquet-column-by-column,528.9,90634208,pa.table column-per-factor
+write,float64,pandas-to-parquet,745.2,91428272,df.to_parquet engine=pyarrow snappy
+write,float64,pandas-to-feather,243.4,73223994,df.to_feather Arrow IPC
+write,float64,pandas-to-pickle,24.3,72130538,df.to_pickle

@@ -1,0 +1,13 @@
+dtype,fmt,key,mode,iter_idx,iter_kind,bytes,elapsed_ms
+float64,parquet,F_float64.parquet,single-stream,0,cold,86409152,132.2
+float64,parquet,F_float64.parquet,single-stream,1,warm,86409152,120.6
+float64,parquet,F_float64.parquet,single-stream,2,warm,86409152,114.8
+float64,parquet,X_float64.parquet,single-stream,0,cold,14401650,33.7
+float64,parquet,X_float64.parquet,single-stream,1,warm,14401650,19.2
+float64,parquet,X_float64.parquet,single-stream,2,warm,14401650,20.1
+float64,parquet,F_float64.parquet,multipart-8MB-10conc,0,cold,86409152,132.1
+float64,parquet,F_float64.parquet,multipart-8MB-10conc,1,warm,86409152,153.7
+float64,parquet,F_float64.parquet,multipart-8MB-10conc,2,warm,86409152,174.6
+float64,parquet,X_float64.parquet,multipart-8MB-10conc,0,cold,14401650,35.6
+float64,parquet,X_float64.parquet,multipart-8MB-10conc,1,warm,14401650,68.5
+float64,parquet,X_float64.parquet,multipart-8MB-10conc,2,warm,14401650,62.5

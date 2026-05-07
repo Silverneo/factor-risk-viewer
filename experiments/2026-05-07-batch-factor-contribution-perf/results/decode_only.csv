@@ -1,0 +1,7 @@
+dtype,format,decode_ms,bytes_F_plus_X
+float32,npy,10.8,42000256
+float32,arrow_ipc,14.3,42001296
+float32,parquet,122.4,58694244
+float64,npy,24.4,84000256
+float64,arrow_ipc,49.3,84001296
+float64,parquet,186.1,100810802

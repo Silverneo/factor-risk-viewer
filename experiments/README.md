@@ -9,6 +9,7 @@ Self-contained records of investigations that informed (or could inform) decisio
 | 2026-04-26 | [Covariance payload formats](2026-04-26-covariance-payload-formats/) | List-of-dict JSON hard-fails in Chrome at 6.5M cells (V8 string-length ceiling). Arrow IPC wins comprehensively on every axis at large sizes. |
 | 2026-04-27 | [Charts experiment](2026-04-27-charts-experiment/) | Seven hierarchical / comparative / temporal chart variants for the same risk data, all driven by existing endpoints. Hand-rolled SVG layouts (squarify + partition) avoid AG Charts Enterprise. |
 | 2026-04-27 | [On-the-fly risk over weekly history](2026-04-27-on-the-fly-risk/) | Direct `xᵀ Σ_t x` is interactive at every N tested (160 ms at N=4000, bandwidth-bound). The earlier "18 s at N=4000" was a `np.einsum(... optimize=True)` pathology — replacing with `(S @ x) · x` gave a ~110× speedup with identical numerics. Per-week eigendecomposition is still useful for shrinking the deployed artefact ~40× (160 MB vs 6.6 GB at N=4000). |
+| 2026-05-07 | [Batch factor risk contribution: theoretical speed](2026-05-07-batch-factor-contribution-perf/) | At K=3000, P=500 the calc is **network-bound on the fast path (`.npy` float32), decode-bound on the slow path (Parquet float64)**. Compute is ~13–25 ms regardless. End-to-end cold (S3 in-region): ~101 ms float32-npy → ~382 ms float64-parquet (model); ~72 → ~280 ms validated against real boto3 + MinIO localhost. `.npy` beats Parquet ~4× for matrix payloads. |
 
 ## Folder convention
 
